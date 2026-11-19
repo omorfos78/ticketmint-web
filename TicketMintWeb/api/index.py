@@ -2,7 +2,7 @@ import json, os, re, secrets, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler
 
 BOT_TOKEN = os.getenv("YAPPER_BOT_TOKEN", "yb_23404489.PlvFt0GgzYy6Z-SGp8ZHfSvOh0io7LhVL7KggSTY")
-CLIENT_ID = os.getenv("YAPPER_CLIENT_ID", "")
+CLIENT_ID = os.getenv("YAPPER_CLIENT_ID", "c6cfe2fd-8a73-47c3-98dd-03d2da87b2d0")
 CLIENT_SECRET = os.getenv("YAPPER_CLIENT_SECRET", "")
 REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").rstrip("/")
 REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
