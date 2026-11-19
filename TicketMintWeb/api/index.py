@@ -160,17 +160,22 @@ class handler(BaseHTTPRequestHandler):
 
         if path == "/callback":
             code = qs.get("code", list(("",))).pop(0)
-            if not code or not CLIENT_ID or not CLIENT_SECRET:
+            if not code:
                 return self.redir("/")
-            body = urllib.parse.urlencode({"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET, "grant_type": "authorization_code", "code": code, "redirect_uri": redir_uri}).encode()
-            req = urllib.request.Request(OAUTH_TOKEN, data=body, headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/1.0"})
-            tok_data = json.loads(urllib.request.urlopen(req, timeout=8).read().decode())
-            access = tok_data.get("access_token", "")
-            me_req = urllib.request.Request("https://yapin.gg", headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/1.0"})
-            me = u_dict(json.loads(urllib.request.urlopen(me_req, timeout=8).read().decode()), "user")
-            sid_tok = secrets.token_urlsafe(24)
-            r_cmd("SET", f"tm:sess:{sid_tok}", json.dumps({"id": me.get("id"), "username": me.get("username", "user")}), "EX", "604800")
-            return self.redir("/dashboard", f"tm_sess={sid_tok}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800")
+            if not CLIENT_SECRET:
+                return self.send_html(page("Missing Secret", "<div class='wrap'><div class='panel'><h2 style='color:#ff7a00'>Missing YAPPER_CLIENT_SECRET</h2><p style='color:#9ca3af;margin-top:8px'>Add <b>YAPPER_CLIENT_SECRET</b> in Vercel → Settings → Environment Variables and click <b>Redeploy</b>.</p></div></div>"))
+            try:
+                body = urllib.parse.urlencode({"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET, "grant_type": "authorization_code", "code": code, "redirect_uri": redir_uri}).encode()
+                req = urllib.request.Request(OAUTH_TOKEN, data=body, headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/1.0"})
+                tok_data = json.loads(urllib.request.urlopen(req, timeout=8).read().decode())
+                access = tok_data.get("access_token", "")
+                me_req = urllib.request.Request("https://yapin.gg", headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/1.0"})
+                me = u_dict(json.loads(urllib.request.urlopen(me_req, timeout=8).read().decode()), "user")
+                sid_tok = secrets.token_urlsafe(24)
+                r_cmd("SET", f"tm:sess:{sid_tok}", json.dumps({"id": me.get("id"), "username": me.get("username", "user")}), "EX", "604800")
+                return self.redir("/dashboard", f"tm_sess={sid_tok}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800")
+            except Exception as e:
+                return self.send_html(page("Login Error", f"<div class='wrap'><div class='panel'><h2 style='color:#ff7a00'>OAuth Callback Error</h2><p style='color:#9ca3af;margin-top:8px'>{e}</p></div></div>"))
 
         sess = self.get_sess()
         if path.startswith("/dashboard"):
