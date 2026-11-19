@@ -10,6 +10,7 @@ API_BASE = "https://yapin.gg"
 OAUTH_AUTH = "https://yapin.gg"
 OAUTH_TOKEN = "https://yapin.gg"
 
+
 def r_cmd(*args):
     if not REDIS_URL or not REDIS_TOKEN:
         return None
