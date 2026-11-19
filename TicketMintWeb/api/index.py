@@ -6,9 +6,9 @@ CLIENT_ID = os.getenv("YAPPER_CLIENT_ID", "")
 CLIENT_SECRET = os.getenv("YAPPER_CLIENT_SECRET", "")
 REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").rstrip("/")
 REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
-API_BASE = "https://yapper.website"
-OAUTH_AUTH = "https://yapper.website"
-OAUTH_TOKEN = "https://yapper.website"
+API_BASE = "https://yapin.gg"
+OAUTH_AUTH = "https://yapin.gg"
+OAUTH_TOKEN = "https://yapin.gg"
 
 def r_cmd(*args):
     if not REDIS_URL or not REDIS_TOKEN:
@@ -154,20 +154,19 @@ class handler(BaseHTTPRequestHandler):
             return self.redir("/", "tm_sess=; Path=/; Max-Age=0")
 
         if path == "/login":
-            if CLIENT_ID:
-                url = f"{OAUTH_AUTH}?client_id={urllib.parse.quote(CLIENT_ID)}&redirect_uri={urllib.parse.quote(redir_uri)}&response_type=code&scope=identify%20servers"
-                return self.redir(url)
-            return self.send_html(page("Login • TicketMint", "<div class='wrap'><div class='panel' style='max-width:440px;margin:40px auto'><h2 style='color:#ff7a00;margin-bottom:8px'>Authorize Yapin' Account</h2><p style='color:#9ca3af;margin-bottom:16px'>Type <b>!dashboard</b> in any server with TicketMint to get your 6-digit login code:</p><form method='POST' action='/code-login'><input type='text' name='code' placeholder='6-digit code (e.g. 482910)' required style='margin-bottom:14px'><button class='btn btn-orange' style='width:100%;justify-content:center'>Authorize</button></form></div></div>"))
+            st = secrets.token_urlsafe(12)
+            url = f"{OAUTH_AUTH}?client_id={urllib.parse.quote(CLIENT_ID)}&redirect_uri={urllib.parse.quote(redir_uri)}&response_type=code&scope=identify&state={st}"
+            return self.redir(url)
 
         if path == "/callback":
             code = qs.get("code", list(("",))).pop(0)
             if not code or not CLIENT_ID or not CLIENT_SECRET:
-                return self.redir("/login")
+                return self.redir("/")
             body = urllib.parse.urlencode({"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET, "grant_type": "authorization_code", "code": code, "redirect_uri": redir_uri}).encode()
-            req = urllib.request.Request(OAUTH_TOKEN, data=body, headers={"Content-Type": "application/x-www-form-urlencoded"})
+            req = urllib.request.Request(OAUTH_TOKEN, data=body, headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/1.0"})
             tok_data = json.loads(urllib.request.urlopen(req, timeout=8).read().decode())
             access = tok_data.get("access_token", "")
-            me_req = urllib.request.Request("https://yapper.website", headers={"Authorization": f"Bearer {access}"})
+            me_req = urllib.request.Request("https://yapin.gg", headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/1.0"})
             me = u_dict(json.loads(urllib.request.urlopen(me_req, timeout=8).read().decode()), "user")
             sid_tok = secrets.token_urlsafe(24)
             r_cmd("SET", f"tm:sess:{sid_tok}", json.dumps({"id": me.get("id"), "username": me.get("username", "user")}), "EX", "604800")
@@ -203,18 +202,7 @@ class handler(BaseHTTPRequestHandler):
         return self.send_html(page("TicketMint • Yapin' Ticket Bot", home, sess))
 
     def do_POST(self):
-        u = urllib.parse.urlsplit(self.path)
         data = urllib.parse.parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode())
-        if u.path == "/code-login":
-            code = data.get("code", list(("",))).pop(0).strip()
-            raw = r_cmd("GET", f"tm:code:{code}")
-            if not raw:
-                return self.redir("/login")
-            r_cmd("DEL", f"tm:code:{code}")
-            sid_tok = secrets.token_urlsafe(24)
-            r_cmd("SET", f"tm:sess:{sid_tok}", raw, "EX", "604800")
-            return self.redir("/dashboard", f"tm_sess={sid_tok}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800")
-
         sess = self.get_sess()
         sid = data.get("server", list(("",))).pop(0)
         if sess and sid and is_admin(sid, sess["id"]):
