@@ -50,8 +50,8 @@ def u_dict(d, k):
 def get_scfg(sid):
     raw = load_all_cfg().get(str(sid), {})
     if isinstance(raw, list):
-        return {"roles": raw, "dash": "", "cat": "", "logs": ""}
-    return {"roles": raw.get("roles", []), "dash": raw.get("dash", ""), "cat": raw.get("cat", ""), "logs": raw.get("logs", "")}
+        return {"roles": raw, "dash": "", "cat": "", "logs": "", "welcome": ""}
+    return {"roles": raw.get("roles", []), "dash": raw.get("dash", ""), "cat": raw.get("cat", ""), "logs": raw.get("logs", ""), "welcome": raw.get("welcome", "")}
 
 def is_admin(sid, uid):
     try:
@@ -107,6 +107,11 @@ a{text-decoration:none;color:inherit}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;max-width:960px;margin:40px auto;padding:0 20px}
 .card{background:#12151e;border:1px solid #1f2432;border-radius:14px;padding:22px;transition:.15s}
 .card:hover{border-color:#ff7a00}
+.srv-row{display:flex;align-items:center;justify-content:space-between;background:#12151e;border:1px solid #1f2432;border-radius:14px;padding:18px 22px;margin-bottom:12px;transition:.15s}
+.srv-row:hover{border-color:#ff7a00;background:#161a26}
+.srv-left{display:flex;align-items:center;gap:16px}
+.srv-ico{width:46px;height:46px;border-radius:12px;background:#1b2030;border:1px solid #2a3147;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:18px;color:#fff;overflow:hidden;flex-shrink:0}
+.srv-ico img{width:100%;height:100%;object-fit:cover}
 .wrap{max-width:980px;width:100%;margin:32px auto;padding:0 18px;flex:1}
 .layout{display:grid;grid-template-columns:220px 1fr;gap:22px}
 @media(max-width:760px){.layout{grid-template-columns:1fr}.nav{padding:12px 16px}}
@@ -245,10 +250,16 @@ class handler(BaseHTTPRequestHandler):
             admin_srvs = [s for s in all_srvs if not s.get("owner_id") or str(s.get("owner_id")) == str(sess["id"]) or s.get("owner") is True or is_admin(s.get("id"), sess["id"])]
             sel_id = qs.get("server", list(("",))).pop(0).strip()
             if not sel_id:
-                cards = "".join(f"<a href='/dashboard?server={s['id']}' class='card'><h3 style='margin-bottom:6px'>{s.get('name', 'Server')}</h3><small style='color:#ff7a00'>Click to configure -></small></a>" for s in admin_srvs)
+                rows = []
+                for s in admin_srvs:
+                    sname = s.get("name", "Server")
+                    ico = f"<img src='{s['icon']}' alt=''>" if s.get("icon") else sname[:1].upper()
+                    mc = f"{s['member_count']} members" if s.get("member_count") else "Ready to configure"
+                    rows.append(f"<a href='/dashboard?server={s['id']}' class='srv-row'><div class='srv-left'><div class='srv-ico'>{ico}</div><div><h3 style='font-size:17px;margin-bottom:3px'>{sname}</h3><small style='color:#9ca3af'>{mc}</small></div></div><span style='color:#ff7a00;font-weight:700;font-size:14px'>Configure &rarr;</span></a>")
+                cards = "".join(rows)
                 add_box = "<form method='GET' action='/dashboard' style='display:flex;gap:10px;max-width:440px;margin-top:16px'><input type='text' name='server' placeholder='Paste Server ID to open directly...' required><button class='btn btn-orange' type='submit'>Open</button></form>"
-                empty = f"<div class='panel'><p style='margin-bottom:8px'>Run <b>python bot.py</b> once to auto-sync your servers, or paste your Server ID below.</p>{add_box}</div>"
-                return self.send_html(page("Select Server - TicketMint", f"<div class='wrap'><h1 style='margin-bottom:6px'>Hey, {sess['username']}</h1><p style='color:#9ca3af;margin-bottom:20px'>Pick a server to configure</p>{f'<div class=\"grid\" style=\"margin:0;padding:0\">{cards}</div>' if cards else empty}</div>", sess))
+                empty = f"<div class='panel'><p style='margin-bottom:8px'>Invite <b>TicketMint</b> to your server (or paste your Server ID below) to configure it.</p>{add_box}</div>"
+                return self.send_html(page("Select Server - TicketMint", f"<div class='wrap' style='max-width:760px'><div style='text-align:center;margin:20px 0 32px'><h1 style='font-size:34px;margin-bottom:6px'>Hey, {sess['username']}</h1><p style='color:#9ca3af'>Pick a server to configure.</p></div>{cards if cards else empty}</div>", sess))
 
             srv_obj = next((s for s in admin_srvs if str(s.get("id")) == str(sel_id)), None)
             if not srv_obj:
@@ -269,11 +280,11 @@ class handler(BaseHTTPRequestHandler):
             chs = meta.get("channels") or u_list(safe_y("GET", f"/servers/{sel_id}/channels"), "channels")
             pills = "".join(f"<label class='pill'><input type='checkbox' name='roles' value='{r['id']}' {'checked' if r['id'] in sc['roles'] else ''}><span>{r.get('name', 'Role')}</span></label>" for r in roles if r.get("name") != "@everyone")
             if not pills:
-                pills = "<span style='color:#9ca3af;font-size:13px'>Start <b>python bot.py</b> once to load your server roles & channels automatically.</span>"
+                pills = "<span style='color:#9ca3af;font-size:13px'>No custom roles synced yet.</span>"
             cho = "<option value=''>-- Select Ticket Panel Channel --</option>" + "".join(f"<option value='{c['id']}' {'selected' if c['id']==sc['dash'] else ''}>#{c.get('name', 'channel')}</option>" for c in chs if c.get("kind") == "text")
             cao = "<option value=''>None (Optional)</option>" + "".join(f"<option value='{c['id']}' {'selected' if c['id']==sc['cat'] else ''}>{c.get('name', 'Category')}</option>" for c in chs if c.get("kind") == "category")
             lgo = "<option value=''>None (Optional)</option>" + "".join(f"<option value='{c['id']}' {'selected' if c['id']==sc['logs'] else ''}>#{c.get('name', 'logs')}</option>" for c in chs if c.get("kind") == "text")
-            saved = "<div style='background:#16a34a22;border:1px solid #16a34a;color:#4ade80;padding:10px 14px;border-radius:9px;margin-bottom:16px'>Saved changes!</div>" if qs.get("saved") else ""
+            saved = "<div style='background:#16a34a22;border:1px solid #16a34a;color:#4ade80;padding:10px 14px;border-radius:9px;margin-bottom:16px'>Saved changes! Your bot remembers these settings automatically.</div>" if qs.get("saved") else ""
             html = f"""<div class='wrap'><a href='/dashboard' style='color:#9ca3af;font-size:13px'>&larr; Back to Servers</a><h1 style='margin:8px 0 22px'>{srv_name}</h1><div class='layout'><div class='side'><a href='/dashboard?server={sel_id}' class='act'>Tickets & Roles</a><a href='/dashboard'>Switch Server</a></div><div class='panel'>{saved}<form method='POST' action='/save'><input type='hidden' name='server' value='{sel_id}'><div class='field'><label>Admin / Mod Roles</label><small>Members with these roles can view, claim, and close private tickets.</small><div class='pills'>{pills}</div></div><div class='field'><label>Ticket Panel Channel</label><small>Channel where the orange Open a Ticket dashboard gets posted.</small><select name='dash'>{cho}</select></div><div class='field'><label>Ticket Category (Optional)</label><small>Category folder where new private ticket rooms appear.</small><select name='cat'>{cao}</select></div><div class='field'><label>Ticket Logs Channel (Optional)</label><small>Receives an embed log whenever a ticket is closed.</small><select name='logs'>{lgo}</select></div><div style='display:flex;gap:10px;flex-wrap:wrap;padding-top:16px'><button name='act' value='save' class='btn btn-orange'>Save Changes</button><button name='act' value='post' class='btn btn-dark'>Save & Post Ticket Panel</button></div></form></div></div></div>"""
             return self.send_html(page(f"{srv_name} - TicketMint", html, sess))
 
@@ -287,7 +298,8 @@ class handler(BaseHTTPRequestHandler):
         sid = data.get("server", list(("",))).pop(0)
         if sess and sid:
             all_cfg = load_all_cfg()
-            all_cfg[sid] = {"roles": data.get("roles", []), "dash": data.get("dash", list(("",))).pop(0), "cat": data.get("cat", list(("",))).pop(0), "logs": data.get("logs", list(("",))).pop(0)}
+            cur = get_scfg(sid)
+            all_cfg[sid] = {"roles": data.get("roles", []), "dash": data.get("dash", list(("",))).pop(0), "cat": data.get("cat", list(("",))).pop(0), "logs": data.get("logs", list(("",))).pop(0), "welcome": cur.get("welcome", "")}
             save_all_cfg(all_cfg)
             if data.get("act", list(("",))).pop(0) == "post" and all_cfg[sid]["dash"]:
                 post_panel(all_cfg[sid]["dash"])
