@@ -10,6 +10,7 @@ Y_HOST = "www." + "yapin.gg"
 API_BASE = f"https://{Y_HOST}/api/bot"
 OAUTH_AUTH = f"https://{Y_HOST}/oauth/authorize"
 OAUTH_TOKEN = f"https://{Y_HOST}/api/oauth/token"
+REDIR_URI = "https://vercel.app"
 
 def r_cmd(*args):
     if not REDIS_URL or not REDIS_TOKEN:
@@ -116,7 +117,7 @@ select,input[type=text]{width:100%;padding:11px 12px;border-radius:9px;backgroun
 """
 
 def page(title, body, user=None):
-    right = f"<span style='color:#9ca3af;font-size:13px'>@{user['username']}</span> <a href='/logout' class='btn btn-dark'>Logout</a>" if user else "<a href='/login' class='btn btn-orange'>Authorize with Yapin'</a>"
+    right = f"<a href='/dashboard' class='btn btn-dark'>@{user['username']}</a> <a href='/logout' class='btn btn-dark'>Logout</a>" if user else "<a href='/login' class='btn btn-orange'>Authorize with Yapin'</a>"
     return f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{title}</title><style>{CSS}</style></head><body><div class='nav'><a href='/' class='brand'><span class='badge'>TM</span> TicketMint</a><div class='nav-links'>{right}</div></div>{body}</body></html>"
 class handler(BaseHTTPRequestHandler):
     def get_sess(self):
@@ -147,16 +148,16 @@ class handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urllib.parse.urlsplit(self.path)
         path, qs = u.path, urllib.parse.parse_qs(u.query)
-        host = self.headers.get("Host", "")
-        proto = "http" if "localhost" in host or "127.0.0.1" in host else "https"
-        redir_uri = f"{proto}://{host}/callback"
+        sess = self.get_sess()
 
         if path == "/logout":
             return self.redir("/", "tm_sess=; Path=/; Max-Age=0")
 
         if path == "/login":
+            if sess:
+                return self.redir("/dashboard")
             st = secrets.token_urlsafe(12)
-            url = f"{OAUTH_AUTH}?client_id={urllib.parse.quote(CLIENT_ID)}&redirect_uri={urllib.parse.quote(redir_uri)}&response_type=code&scope=identify&state={st}"
+            url = f"{OAUTH_AUTH}?client_id={urllib.parse.quote(CLIENT_ID)}&redirect_uri={urllib.parse.quote(REDIR_URI)}&response_type=code&scope=identify&state={st}"
             return self.redir(url)
 
         if path == "/callback":
@@ -166,7 +167,7 @@ class handler(BaseHTTPRequestHandler):
             if not CLIENT_SECRET:
                 return self.send_html(page("Missing Secret", "<div class='wrap'><div class='panel'><h2 style='color:#ff7a00'>Missing YAPPER_CLIENT_SECRET</h2><p style='color:#9ca3af;margin-top:8px'>Add <b>YAPPER_CLIENT_SECRET</b> in Vercel -> Settings -> Environment Variables and click <b>Redeploy</b>.</p></div></div>"))
             try:
-                body = urllib.parse.urlencode({"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET, "grant_type": "authorization_code", "code": code, "redirect_uri": redir_uri}).encode()
+                body = urllib.parse.urlencode({"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET, "grant_type": "authorization_code", "code": code, "redirect_uri": REDIR_URI}).encode()
                 req = urllib.request.Request(OAUTH_TOKEN, data=body, headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/1.0"})
                 tok_data = json.loads(urllib.request.urlopen(req, timeout=8).read().decode())
                 access = tok_data.get("access_token", "")
@@ -178,7 +179,6 @@ class handler(BaseHTTPRequestHandler):
             except Exception as e:
                 return self.send_html(page("Login Error", f"<div class='wrap'><div class='panel'><h2 style='color:#ff7a00'>OAuth Callback Error</h2><p style='color:#9ca3af;margin-top:8px'>{e}</p></div></div>"))
 
-        sess = self.get_sess()
         if path.startswith("/dashboard"):
             if not sess:
                 return self.redir("/login")
@@ -204,7 +204,8 @@ class handler(BaseHTTPRequestHandler):
             html = f"""<div class='wrap'><a href='/dashboard' style='color:#9ca3af;font-size:13px'>&larr; Back to Servers</a><h1 style='margin:8px 0 22px'>{srv_name}</h1><div class='layout'><div class='side'><a href='/dashboard?server={sel_id}' class='act'>Tickets & Roles</a><a href='/dashboard'>Switch Server</a></div><div class='panel'>{saved}<form method='POST' action='/save'><input type='hidden' name='server' value='{sel_id}'><div class='field'><label>Admin / Mod Roles</label><small>Members with these roles can view, claim, and close private tickets.</small><div class='pills'>{pills}</div></div><div class='field'><label>Ticket Panel Channel</label><small>Channel where the orange Open a Ticket dashboard gets posted.</small><select name='dash'>{cho}</select></div><div class='field'><label>Ticket Category (Optional)</label><small>Category folder where new private ticket rooms appear.</small><select name='cat'>{cao}</select></div><div class='field'><label>Ticket Logs Channel (Optional)</label><small>Receives an embed log whenever a ticket is closed.</small><select name='logs'>{lgo}</select></div><div style='display:flex;gap:10px;flex-wrap:wrap;padding-top:16px'><button name='act' value='save' class='btn btn-orange'>Save Changes</button><button name='act' value='post' class='btn btn-dark'>Save & Post Ticket Panel</button></div></form></div></div></div>"""
             return self.send_html(page(f"{srv_name} - TicketMint", html, sess))
 
-        home = """<div class='hero'><h1>Yapin's cleanest <span>ticket, report & appeal</span> desk.</h1><p>Private support rooms, member reports, and punishment appeals—configured from a fast 24/7 dashboard on desktop and mobile.</p><div class='hero-btns'><a href='/dashboard' class='btn btn-orange'>Open Dashboard</a></div></div><div class='grid'><div class='card'><h3 style='color:#ff7a00;margin-bottom:8px'>Private Ticket Rooms</h3><p style='color:#9ca3af;font-size:14px'>Auto-locked channels visible only to the ticket creator and your chosen Mod roles.</p></div><div class='card'><h3 style='color:#ff7a00;margin-bottom:8px'>Reports & Appeals</h3><p style='color:#9ca3af;font-size:14px'>Built-in pop-up forms for General Help, Member Reports, and Punishment Appeals.</p></div><div class='card'><h3 style='color:#ff7a00;margin-bottom:8px'>24/7 Web Control</h3><p style='color:#9ca3af;font-size:14px'>Manage staff roles, ticket categories, and ticket logs from your phone or PC.</p></div></div>"""
+        cta = "Go to Dashboard" if sess else "Authorize & Open Dashboard"
+        home = f"""<div class='hero'><h1>Yapin's cleanest <span>ticket, report & appeal</span> desk.</h1><p>Private support rooms, member reports, and punishment appeals—configured from a fast 24/7 dashboard on desktop and mobile.</p><div class='hero-btns'><a href='/dashboard' class='btn btn-orange'>{cta}</a></div></div><div class='grid'><div class='card'><h3 style='color:#ff7a00;margin-bottom:8px'>Private Ticket Rooms</h3><p style='color:#9ca3af;font-size:14px'>Auto-locked channels visible only to the ticket creator and your chosen Mod roles.</p></div><div class='card'><h3 style='color:#ff7a00;margin-bottom:8px'>Reports & Appeals</h3><p style='color:#9ca3af;font-size:14px'>Built-in pop-up forms for General Help, Member Reports, and Punishment Appeals.</p></div><div class='card'><h3 style='color:#ff7a00;margin-bottom:8px'>24/7 Web Control</h3><p style='color:#9ca3af;font-size:14px'>Manage staff roles, ticket categories, and ticket logs from your phone or PC.</p></div></div>"""
         return self.send_html(page("TicketMint - Yapin' Ticket Bot", home, sess))
 
     def do_POST(self):
