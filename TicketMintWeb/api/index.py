@@ -229,27 +229,35 @@ class handler(BaseHTTPRequestHandler):
             if not sess:
                 return self.redir("/login")
             all_srvs = []
-            api_dbg = ""
-            for sp in ("/servers", "/me", "/me/servers"):
-                try:
-                    res = y_api("GET", sp)
-                    cand = u_list(res, "servers") or u_list(res, "guilds") or (res.get("bot", {}).get("servers", []) if isinstance(res, dict) and isinstance(res.get("bot"), dict) else [])
+            try:
+                cached = r_cmd("GET", "ticketmint:servers")
+                if cached:
+                    all_srvs = json.loads(cached)
+            except Exception:
+                pass
+            if not all_srvs:
+                for sp in ("/servers", "/me"):
+                    res = safe_y("GET", sp)
+                    cand = u_list(res, "servers") or (res.get("bot", {}).get("servers", []) if isinstance(res, dict) and isinstance(res.get("bot"), dict) else [])
                     if cand:
                         all_srvs = cand
                         break
-                    api_dbg = f"{sp}: {str(res)[:140]}"
-                except Exception as ex:
-                    api_dbg = f"{sp}: {ex}"
             admin_srvs = [s for s in all_srvs if str(s.get("owner_id", "")) == str(sess["id"]) or s.get("owner") is True or is_admin(s.get("id"), sess["id"])]
             sel_id = qs.get("server", list(("",))).pop(0)
             if not sel_id:
                 cards = "".join(f"<a href='/dashboard?server={s['id']}' class='card'><h3 style='margin-bottom:6px'>{s.get('name', 'Server')}</h3><small style='color:#ff7a00'>Click to configure -></small></a>" for s in admin_srvs)
-                empty = f"<div class='panel'><p style='margin-bottom:8px'>No servers found where you are Admin and <b>TicketMint</b> is added.</p><small style='color:#9ca3af'>Invite TicketMint to your server first, then refresh. (Bot servers: {len(all_srvs)} | {api_dbg})</small></div>"
+                add_box = "<form method='GET' action='/dashboard' style='display:flex;gap:10px;max-width:440px;margin-top:16px'><input type='text' name='server' placeholder='Paste Server ID to open directly...'><button class='btn btn-orange' type='submit'>Open</button></form>"
+                empty = f"<div class='panel'><p style='margin-bottom:8px'>No servers synced yet—make sure <b>TicketMint</b> is in your server and running, or paste your Server ID below.</p>{add_box}</div>"
                 return self.send_html(page("Select Server - TicketMint", f"<div class='wrap'><h1 style='margin-bottom:6px'>Hey, {sess['username']}</h1><p style='color:#9ca3af;margin-bottom:20px'>Pick a server to configure</p>{f'<div class=\"grid\" style=\"margin:0;padding:0\">{cards}</div>' if cards else empty}</div>", sess))
 
-            if not any(str(s.get("id")) == str(sel_id) for s in admin_srvs):
-                return self.redir("/dashboard")
-            srv_name = next((s.get("name", "Server") for s in admin_srvs if str(s.get("id")) == str(sel_id)), "Server")
+            srv_obj = next((s for s in admin_srvs if str(s.get("id")) == str(sel_id)), None)
+            if not srv_obj:
+                fetched = u_dict(safe_y("GET", f"/servers/{sel_id}"), "server")
+                if fetched and fetched.get("id") and is_admin(sel_id, sess["id"]):
+                    srv_obj = fetched
+                else:
+                    return self.redir("/dashboard")
+            srv_name = srv_obj.get("name", "Server")
             sc = get_scfg(sel_id)
             roles = u_list(safe_y("GET", f"/servers/{sel_id}/roles"), "roles")
             chs = u_list(safe_y("GET", f"/servers/{sel_id}/channels"), "channels")
