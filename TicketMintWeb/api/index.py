@@ -1,4 +1,4 @@
-import json, os, re, secrets, urllib.error, urllib.parse, urllib.request
+import base64, json, os, re, secrets, urllib.error, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler
 
 BOT_TOKEN = os.getenv("YAPPER_BOT_TOKEN", "yb_23404489.PlvFt0GgzYy6Z-SGp8ZHfSvOh0io7LhVL7KggSTY")
@@ -120,6 +120,18 @@ select,input[type=text]{width:100%;padding:11px 12px;border-radius:9px;backgroun
 def page(title, body, user=None):
     right = f"<a href='/dashboard' class='btn btn-dark'>@{user['username']}</a> <a href='/logout' class='btn btn-dark'>Logout</a>" if user else "<a href='/login' class='btn btn-orange'>Authorize with Yapin'</a>"
     return f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{title}</title><style>{CSS}</style></head><body><div class='nav'><a href='/' class='brand'><span class='badge'>TM</span> TicketMint</a><div class='nav-links'>{right}</div></div>{body}</body></html>"
+def decode_jwt(tok):
+    try:
+        parts = tok.split(".")
+        if len(parts) < 2:
+            return None
+        p = parts.pop(1)
+        p += "=" * (-len(p) % 4)
+        obj = json.loads(base64.urlsafe_b64decode(p.encode()).decode())
+        return obj if isinstance(obj, dict) and (obj.get("id") or obj.get("sub") or obj.get("user_id")) else None
+    except Exception:
+        return None
+
 class handler(BaseHTTPRequestHandler):
     def get_sess(self):
         ck = self.headers.get("Cookie", "")
@@ -183,23 +195,29 @@ class handler(BaseHTTPRequestHandler):
                 if not tok_data or not tok_data.get("access_token"):
                     raise RuntimeError(last_err or "No access_token returned")
                 access = tok_data.get("access_token", "")
-                me_raw = tok_data.get("user") if isinstance(tok_data.get("user"), dict) else None
+                me_raw = tok_data.get("user") if isinstance(tok_data.get("user"), dict) else decode_jwt(tok_data.get("id_token", "") or access)
+                errs = []
                 if not me_raw:
-                    for ep in ("/api/oauth/userinfo", "/api/users/@me", "/api/oauth/@me", "/api/v1/users/@me"):
+                    for ep in ("/api/oauth/me", "/api/oauth/userinfo", "/api/me", "/api/user", "/api/users/me", "/api/users/@me", "/oauth/userinfo"):
                         try:
                             me_req = urllib.request.Request(f"https://{Y_HOST}{ep}", headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/1.0"})
                             cand = json.loads(urllib.request.urlopen(me_req, timeout=8).read().decode())
-                            if isinstance(cand, dict) and (cand.get("id") or cand.get("sub") or isinstance(cand.get("user"), dict)):
-                                me_raw = cand
-                                break
+                            if isinstance(cand, dict):
+                                inner = cand.get("user", cand) if isinstance(cand.get("user"), dict) else cand
+                                if inner.get("id") or inner.get("user_id") or inner.get("sub"):
+                                    me_raw = inner
+                                    break
+                            errs.append(f"{ep}:bad_json")
+                        except urllib.error.HTTPError as he:
+                            errs.append(f"{ep}:{he.code}")
                         except Exception:
-                            pass
+                            errs.append(f"{ep}:err")
                 if not me_raw:
-                    raise RuntimeError("Could not fetch Yapin user profile")
-                me = me_raw.get("user", me_raw) if isinstance(me_raw, dict) else {}
-                uid = me.get("id") or me.get("sub")
+                    raise RuntimeError(f"Profile lookup failed ({', '.join(errs)}) | tok_keys={list(tok_data.keys())}")
+                uid = me_raw.get("id") or me_raw.get("user_id") or me_raw.get("sub")
+                uname = me_raw.get("username") or me_raw.get("preferred_username") or me_raw.get("name") or me_raw.get("display_name") or "user"
                 sid_tok = secrets.token_urlsafe(24)
-                r_cmd("SET", f"tm:sess:{sid_tok}", json.dumps({"id": uid, "username": me.get("username", "user")}), "EX", "604800")
+                r_cmd("SET", f"tm:sess:{sid_tok}", json.dumps({"id": uid, "username": uname}), "EX", "604800")
                 return self.redir("/dashboard", f"tm_sess={sid_tok}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800")
             except Exception as e:
                 return self.send_html(page("Login Error", f"<div class='wrap'><div class='panel'><h2 style='color:#ff7a00'>OAuth Callback Error</h2><p style='color:#9ca3af;margin-top:8px'>{e}</p></div></div>"))
