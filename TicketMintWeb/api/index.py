@@ -35,6 +35,12 @@ def y_api(method, path, body=None, bearer=None):
         txt = resp.read().decode()
         return json.loads(txt) if txt else {}
 
+def safe_y(method, path, body=None):
+    try:
+        return y_api(method, path, body)
+    except Exception:
+        return {}
+
 def u_list(d, k):
     return d if isinstance(d, list) else (d.get(k, []) if isinstance(d, dict) else [])
 
@@ -49,20 +55,22 @@ def get_scfg(sid):
 
 def is_admin(sid, uid):
     try:
-        if u_dict(y_api("GET", f"/servers/{sid}"), "server").get("owner_id") == uid:
+        srv = u_dict(safe_y("GET", f"/servers/{sid}"), "server")
+        if str(srv.get("owner_id", "")) == str(uid):
             return True
-        mr = set(u_dict(y_api("GET", f"/servers/{sid}/members/{uid}"), "member").get("roles", []))
-        for r in u_list(y_api("GET", f"/servers/{sid}/roles"), "roles"):
+        mem = u_dict(safe_y("GET", f"/servers/{sid}/members/{uid}"), "member")
+        mr = set(mem.get("roles", []))
+        for r in u_list(safe_y("GET", f"/servers/{sid}/roles"), "roles"):
             if r.get("id") in mr:
                 p = r.get("permissions", {})
-                if p.get("administrator") or p.get("manage_server") or p.get("manage_channels"):
+                if isinstance(p, dict) and (p.get("administrator") or p.get("manage_server") or p.get("manage_channels")):
                     return True
     except Exception:
         pass
     return False
 
 def post_panel(cid):
-    bname = u_dict(y_api("GET", "/me"), "bot").get("name", "TicketMint")
+    bname = u_dict(safe_y("GET", "/me"), "bot").get("name", "TicketMint")
     payload = {
         "flags": 32768,
         "components": [{
@@ -78,7 +86,7 @@ def post_panel(cid):
             ],
         }],
     }
-    y_api("POST", f"/channels/{cid}/messages", payload)
+    safe_y("POST", f"/channels/{cid}/messages", payload)
 CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#0b0d12;color:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh;display:flex;flex-direction:column}
@@ -196,7 +204,6 @@ class handler(BaseHTTPRequestHandler):
                     raise RuntimeError(last_err or "No access_token returned")
                 access = tok_data.get("access_token", "")
                 me_raw = tok_data.get("user") if isinstance(tok_data.get("user"), dict) else decode_jwt(tok_data.get("id_token", "") or access)
-                errs = []
                 if not me_raw:
                     for ep in ("/api/oauth/me", "/api/oauth/userinfo", "/api/me", "/api/user", "/api/users/me", "/api/users/@me", "/oauth/userinfo"):
                         try:
@@ -207,13 +214,10 @@ class handler(BaseHTTPRequestHandler):
                                 if inner.get("id") or inner.get("user_id") or inner.get("sub"):
                                     me_raw = inner
                                     break
-                            errs.append(f"{ep}:bad_json")
-                        except urllib.error.HTTPError as he:
-                            errs.append(f"{ep}:{he.code}")
                         except Exception:
-                            errs.append(f"{ep}:err")
+                            pass
                 if not me_raw:
-                    raise RuntimeError(f"Profile lookup failed ({', '.join(errs)}) | tok_keys={list(tok_data.keys())}")
+                    raise RuntimeError("Could not fetch Yapin user profile")
                 uid = me_raw.get("id") or me_raw.get("user_id") or me_raw.get("sub")
                 uname = me_raw.get("username") or me_raw.get("preferred_username") or me_raw.get("name") or me_raw.get("display_name") or "user"
                 sid_tok = secrets.token_urlsafe(24)
@@ -224,24 +228,30 @@ class handler(BaseHTTPRequestHandler):
         if path.startswith("/dashboard"):
             if not sess:
                 return self.redir("/login")
-            all_srvs = u_list(y_api("GET", "/servers"), "servers")
+            all_srvs = []
+            for sp in ("/servers", "/me/servers", "/guilds", "/me/guilds", "/bot/servers"):
+                res = safe_y("GET", sp)
+                cand = u_list(res, "servers") or u_list(res, "guilds")
+                if cand:
+                    all_srvs = cand
+                    break
             admin_srvs = [s for s in all_srvs if is_admin(s.get("id"), sess["id"])]
             sel_id = qs.get("server", list(("",))).pop(0)
             if not sel_id:
-                cards = "".join(f"<a href='/dashboard?server={s['id']}' class='card'><h3 style='margin-bottom:6px'>{s['name']}</h3><small style='color:#ff7a00'>Click to configure -></small></a>" for s in admin_srvs)
-                empty = "<div class='panel'><p>No servers found where you are Admin and TicketMint is added.</p></div>"
+                cards = "".join(f"<a href='/dashboard?server={s['id']}' class='card'><h3 style='margin-bottom:6px'>{s.get('name', 'Server')}</h3><small style='color:#ff7a00'>Click to configure -></small></a>" for s in admin_srvs)
+                empty = "<div class='panel'><p style='margin-bottom:8px'>No servers found where you are Admin and <b>TicketMint</b> is added.</p><small style='color:#9ca3af'>Invite TicketMint to your server first, then refresh this page.</small></div>"
                 return self.send_html(page("Select Server - TicketMint", f"<div class='wrap'><h1 style='margin-bottom:6px'>Hey, {sess['username']}</h1><p style='color:#9ca3af;margin-bottom:20px'>Pick a server to configure</p>{f'<div class=\"grid\" style=\"margin:0;padding:0\">{cards}</div>' if cards else empty}</div>", sess))
 
             if not is_admin(sel_id, sess["id"]):
                 return self.redir("/dashboard")
-            srv_name = next((s["name"] for s in admin_srvs if s["id"] == sel_id), "Server")
+            srv_name = next((s.get("name", "Server") for s in admin_srvs if str(s.get("id")) == str(sel_id)), "Server")
             sc = get_scfg(sel_id)
-            roles = u_list(y_api("GET", f"/servers/{sel_id}/roles"), "roles")
-            chs = u_list(y_api("GET", f"/servers/{sel_id}/channels"), "channels")
-            pills = "".join(f"<label class='pill'><input type='checkbox' name='roles' value='{r['id']}' {'checked' if r['id'] in sc['roles'] else ''}><span>{r['name']}</span></label>" for r in roles if r.get("name") != "@everyone")
-            cho = "<option value=''>-- Select Ticket Panel Channel --</option>" + "".join(f"<option value='{c['id']}' {'selected' if c['id']==sc['dash'] else ''}>#{c['name']}</option>" for c in chs if c.get("kind") == "text")
-            cao = "<option value=''>None (Optional)</option>" + "".join(f"<option value='{c['id']}' {'selected' if c['id']==sc['cat'] else ''}>{c['name']}</option>" for c in chs if c.get("kind") == "category")
-            lgo = "<option value=''>None (Optional)</option>" + "".join(f"<option value='{c['id']}' {'selected' if c['id']==sc['logs'] else ''}>#{c['name']}</option>" for c in chs if c.get("kind") == "text")
+            roles = u_list(safe_y("GET", f"/servers/{sel_id}/roles"), "roles")
+            chs = u_list(safe_y("GET", f"/servers/{sel_id}/channels"), "channels")
+            pills = "".join(f"<label class='pill'><input type='checkbox' name='roles' value='{r['id']}' {'checked' if r['id'] in sc['roles'] else ''}><span>{r.get('name', 'Role')}</span></label>" for r in roles if r.get("name") != "@everyone")
+            cho = "<option value=''>-- Select Ticket Panel Channel --</option>" + "".join(f"<option value='{c['id']}' {'selected' if c['id']==sc['dash'] else ''}>#{c.get('name', 'channel')}</option>" for c in chs if c.get("kind") == "text")
+            cao = "<option value=''>None (Optional)</option>" + "".join(f"<option value='{c['id']}' {'selected' if c['id']==sc['cat'] else ''}>{c.get('name', 'Category')}</option>" for c in chs if c.get("kind") == "category")
+            lgo = "<option value=''>None (Optional)</option>" + "".join(f"<option value='{c['id']}' {'selected' if c['id']==sc['logs'] else ''}>#{c.get('name', 'logs')}</option>" for c in chs if c.get("kind") == "text")
             saved = "<div style='background:#16a34a22;border:1px solid #16a34a;color:#4ade80;padding:10px 14px;border-radius:9px;margin-bottom:16px'>Saved changes!</div>" if qs.get("saved") else ""
             html = f"""<div class='wrap'><a href='/dashboard' style='color:#9ca3af;font-size:13px'>&larr; Back to Servers</a><h1 style='margin:8px 0 22px'>{srv_name}</h1><div class='layout'><div class='side'><a href='/dashboard?server={sel_id}' class='act'>Tickets & Roles</a><a href='/dashboard'>Switch Server</a></div><div class='panel'>{saved}<form method='POST' action='/save'><input type='hidden' name='server' value='{sel_id}'><div class='field'><label>Admin / Mod Roles</label><small>Members with these roles can view, claim, and close private tickets.</small><div class='pills'>{pills}</div></div><div class='field'><label>Ticket Panel Channel</label><small>Channel where the orange Open a Ticket dashboard gets posted.</small><select name='dash'>{cho}</select></div><div class='field'><label>Ticket Category (Optional)</label><small>Category folder where new private ticket rooms appear.</small><select name='cat'>{cao}</select></div><div class='field'><label>Ticket Logs Channel (Optional)</label><small>Receives an embed log whenever a ticket is closed.</small><select name='logs'>{lgo}</select></div><div style='display:flex;gap:10px;flex-wrap:wrap;padding-top:16px'><button name='act' value='save' class='btn btn-orange'>Save Changes</button><button name='act' value='post' class='btn btn-dark'>Save & Post Ticket Panel</button></div></form></div></div></div>"""
             return self.send_html(page(f"{srv_name} - TicketMint", html, sess))
