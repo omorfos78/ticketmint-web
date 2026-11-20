@@ -243,13 +243,12 @@ class handler(BaseHTTPRequestHandler):
                     all_srvs = json.loads(cached)
             except Exception:
                 pass
-            if not all_srvs:
-                for sp in ("/servers", "/me"):
-                    res = safe_y("GET", sp)
-                    cand = u_list(res, "servers") or (res.get("bot", {}).get("servers", []) if isinstance(res, dict) and isinstance(res.get("bot"), dict) else [])
-                    if cand:
-                        all_srvs = cand
-                        break
+            for sp in ("/servers", "/me"):
+                res = safe_y("GET", sp)
+                cand = u_list(res, "servers") or (res.get("bot", {}).get("servers", []) if isinstance(res, dict) and isinstance(res.get("bot"), dict) else [])
+                for c in cand:
+                    if c.get("id") and not any(str(x.get("id")) == str(c.get("id")) for x in all_srvs):
+                        all_srvs.append(c)
             admin_srvs = [s for s in all_srvs if not s.get("owner_id") or str(s.get("owner_id")) == str(sess["id"]) or s.get("owner") is True or is_admin(s.get("id"), sess["id"])]
             sel_id = qs.get("server", list(("",))).pop(0).strip()
             if not sel_id:
@@ -266,12 +265,12 @@ class handler(BaseHTTPRequestHandler):
                 return self.send_html(page("Select Server - TicketMint", f"<div class='wrap' style='max-width:760px'><div style='text-align:center;margin:20px 0 32px'><h1 style='font-size:34px;margin-bottom:6px'>Hey, {sess['username']}</h1><p style='color:#9ca3af'>Pick a server to configure.</p></div>{cards if cards else empty}{footer_inv}</div>", sess))
 
             srv_obj = next((s for s in admin_srvs if str(s.get("id")) == str(sel_id)), None)
+            fetched = u_dict(safe_y("GET", f"/servers/{sel_id}"), "server")
             if not srv_obj:
-                fetched = u_dict(safe_y("GET", f"/servers/{sel_id}"), "server")
                 if fetched and fetched.get("id") and not is_admin(sel_id, sess["id"]):
                     return self.redir("/dashboard")
                 srv_obj = fetched if fetched and fetched.get("id") else {"id": sel_id, "name": f"Server ({sel_id})"}
-            srv_name = srv_obj.get("name", f"Server ({sel_id})")
+            srv_name = (fetched.get("name") if isinstance(fetched, dict) else None) or srv_obj.get("name", f"Server ({sel_id})")
             sc = get_scfg(sel_id)
             meta = {}
             try:
@@ -280,11 +279,16 @@ class handler(BaseHTTPRequestHandler):
                     meta = json.loads(mraw)
             except Exception:
                 pass
-            roles = meta.get("roles") or u_list(safe_y("GET", f"/servers/{sel_id}/roles"), "roles")
-            chs = meta.get("channels") or u_list(safe_y("GET", f"/servers/{sel_id}/channels"), "channels")
+            roles = u_list(safe_y("GET", f"/servers/{sel_id}/roles"), "roles") or meta.get("roles", [])
+            chs = u_list(safe_y("GET", f"/servers/{sel_id}/channels"), "channels") or meta.get("channels", [])
+            if roles or chs:
+                try:
+                    r_cmd("SET", f"ticketmint:meta:{sel_id}", json.dumps({"roles": roles, "channels": chs}))
+                except Exception:
+                    pass
             pills = "".join(f"<label class='pill'><input type='checkbox' name='roles' value='{r['id']}' {'checked' if r['id'] in sc['roles'] else ''}><span>{r.get('name', 'Role')}</span></label>" for r in roles if r.get("name") != "@everyone")
             if not pills:
-                pills = "<span style='color:#9ca3af;font-size:13px'>No custom roles synced yet.</span>"
+                pills = "<span style='color:#9ca3af;font-size:13px'>Make sure <b>python bot.py</b> is running and TicketMint is in this server, then refresh.</span>"
             is_cat = lambda c: str(c.get("kind", "")).lower() in ("category", "folder") or str(c.get("type", "")).lower() in ("category", "4")
             is_txt = lambda c: not is_cat(c) and str(c.get("kind", "text")).lower() in ("text", "channel", "") and str(c.get("type", "0")).lower() in ("text", "0", "")
             cho = "<option value=''>-- Select Ticket Panel Channel --</option>" + "".join(f"<option value='{c['id']}' {'selected' if c['id']==sc['dash'] else ''}>#{c.get('name', 'channel')}</option>" for c in chs if is_txt(c))
