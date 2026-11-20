@@ -229,20 +229,20 @@ class handler(BaseHTTPRequestHandler):
             if not sess:
                 return self.redir("/login")
             all_srvs = []
-            for sp in ("/servers", "/me/servers", "/guilds", "/me/guilds", "/bot/servers"):
+            for sp in ("/servers", "/me", "/me/servers", "/guilds"):
                 res = safe_y("GET", sp)
-                cand = u_list(res, "servers") or u_list(res, "guilds")
+                cand = u_list(res, "servers") or u_list(res, "guilds") or (res.get("bot", {}).get("servers", []) if isinstance(res, dict) and isinstance(res.get("bot"), dict) else [])
                 if cand:
                     all_srvs = cand
                     break
-            admin_srvs = [s for s in all_srvs if is_admin(s.get("id"), sess["id"])]
+            admin_srvs = [s for s in all_srvs if str(s.get("owner_id", "")) == str(sess["id"]) or s.get("owner") is True or is_admin(s.get("id"), sess["id"])]
             sel_id = qs.get("server", list(("",))).pop(0)
             if not sel_id:
                 cards = "".join(f"<a href='/dashboard?server={s['id']}' class='card'><h3 style='margin-bottom:6px'>{s.get('name', 'Server')}</h3><small style='color:#ff7a00'>Click to configure -></small></a>" for s in admin_srvs)
                 empty = "<div class='panel'><p style='margin-bottom:8px'>No servers found where you are Admin and <b>TicketMint</b> is added.</p><small style='color:#9ca3af'>Invite TicketMint to your server first, then refresh this page.</small></div>"
                 return self.send_html(page("Select Server - TicketMint", f"<div class='wrap'><h1 style='margin-bottom:6px'>Hey, {sess['username']}</h1><p style='color:#9ca3af;margin-bottom:20px'>Pick a server to configure</p>{f'<div class=\"grid\" style=\"margin:0;padding:0\">{cards}</div>' if cards else empty}</div>", sess))
 
-            if not is_admin(sel_id, sess["id"]):
+            if not any(str(s.get("id")) == str(sel_id) for s in admin_srvs):
                 return self.redir("/dashboard")
             srv_name = next((s.get("name", "Server") for s in admin_srvs if str(s.get("id")) == str(sel_id)), "Server")
             sc = get_scfg(sel_id)
