@@ -12,7 +12,7 @@ OAUTH_AUTH = f"https://{Y_HOST}/oauth/authorize"
 OAUTH_TOKEN = f"https://{Y_HOST}/api/oauth/token"
 SITE_HOST = "ticketmint-web." + "vercel.app"
 REDIR_URI = f"https://{SITE_HOST}/callback"
-INVITE_URL = f"{OAUTH_AUTH}?client_id={urllib.parse.quote(CLIENT_ID)}&redirect_uri={urllib.parse.quote(REDIR_URI)}&response_type=code&scope=bot"
+INVITE_URL = "https://" + "yapin.gg/bot/23404489-32ad-42d7-ac93-c1ba71cb2574"
 
 def r_cmd(*args):
     if not REDIS_URL or not REDIS_TOKEN:
