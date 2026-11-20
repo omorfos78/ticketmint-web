@@ -6,10 +6,10 @@ CLIENT_ID = os.getenv("YAPPER_CLIENT_ID", "c6cfe2fd-8a73-47c3-98dd-03d2da87b2d0"
 CLIENT_SECRET = os.getenv("YAPPER_CLIENT_SECRET", "")
 REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").rstrip("/")
 REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
-API_BASE = "https://yapin.gg"
-OAUTH_AUTH = "https://yapin.gg"
-OAUTH_TOKEN = "https://yapin.gg"
-
+Y_HOST = "www." + "yapin.gg"
+API_BASE = f"https://{Y_HOST}/api/bot"
+OAUTH_AUTH = f"https://{Y_HOST}/oauth/authorize"
+OAUTH_TOKEN = f"https://{Y_HOST}/api/oauth/token"
 
 def r_cmd(*args):
     if not REDIS_URL or not REDIS_TOKEN:
@@ -170,7 +170,7 @@ class handler(BaseHTTPRequestHandler):
                 req = urllib.request.Request(OAUTH_TOKEN, data=body, headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/1.0"})
                 tok_data = json.loads(urllib.request.urlopen(req, timeout=8).read().decode())
                 access = tok_data.get("access_token", "")
-                me_req = urllib.request.Request("https://yapin.gg", headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/1.0"})
+                me_req = urllib.request.Request(f"https://{Y_HOST}/api/users/@me", headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/1.0"})
                 me = u_dict(json.loads(urllib.request.urlopen(me_req, timeout=8).read().decode()), "user")
                 sid_tok = secrets.token_urlsafe(24)
                 r_cmd("SET", f"tm:sess:{sid_tok}", json.dumps({"id": me.get("id"), "username": me.get("username", "user")}), "EX", "604800")
