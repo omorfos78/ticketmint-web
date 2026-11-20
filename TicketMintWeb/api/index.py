@@ -1,4 +1,4 @@
-import json, os, re, secrets, urllib.parse, urllib.request
+import base64, json, os, re, secrets, urllib.error, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler
 
 BOT_TOKEN = os.getenv("YAPPER_BOT_TOKEN", "yb_23404489.PlvFt0GgzYy6Z-SGp8ZHfSvOh0io7LhVL7KggSTY")
@@ -168,9 +168,23 @@ class handler(BaseHTTPRequestHandler):
             if not CLIENT_SECRET:
                 return self.send_html(page("Missing Secret", "<div class='wrap'><div class='panel'><h2 style='color:#ff7a00'>Missing YAPPER_CLIENT_SECRET</h2><p style='color:#9ca3af;margin-top:8px'>Add <b>YAPPER_CLIENT_SECRET</b> in Vercel -> Settings -> Environment Variables and click <b>Redeploy</b>.</p></div></div>"))
             try:
-                body = urllib.parse.urlencode({"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET, "grant_type": "authorization_code", "code": code, "redirect_uri": REDIR_URI}).encode()
-                req = urllib.request.Request(OAUTH_TOKEN, data=body, headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/1.0"})
-                tok_data = json.loads(urllib.request.urlopen(req, timeout=8).read().decode())
+                tok_data = None
+                last_err = ""
+                b64 = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()
+                attempts = [
+                    (json.dumps({"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET, "grant_type": "authorization_code", "code": code, "redirect_uri": REDIR_URI}).encode(), {"Content-Type": "application/json", "Authorization": f"Basic {b64}", "User-Agent": "TicketMintWeb/1.0"}),
+                    (urllib.parse.urlencode({"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET, "grant_type": "authorization_code", "code": code, "redirect_uri": REDIR_URI}).encode(), {"Content-Type": "application/x-www-form-urlencoded", "Authorization": f"Basic {b64}", "User-Agent": "TicketMintWeb/1.0"}),
+                ]
+                for b_data, hdrs in attempts:
+                    try:
+                        req = urllib.request.Request(OAUTH_TOKEN, data=b_data, headers=hdrs, method="POST")
+                        tok_data = json.loads(urllib.request.urlopen(req, timeout=8).read().decode())
+                        if tok_data.get("access_token"):
+                            break
+                    except urllib.error.HTTPError as he:
+                        last_err = f"{he.code}: {he.read().decode(errors='ignore')}"
+                if not tok_data or not tok_data.get("access_token"):
+                    raise RuntimeError(last_err or "No access_token returned")
                 access = tok_data.get("access_token", "")
                 me_req = urllib.request.Request(f"https://{Y_HOST}/api/users/@me", headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/1.0"})
                 me = u_dict(json.loads(urllib.request.urlopen(me_req, timeout=8).read().decode()), "user")
@@ -179,7 +193,6 @@ class handler(BaseHTTPRequestHandler):
                 return self.redir("/dashboard", f"tm_sess={sid_tok}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800")
             except Exception as e:
                 return self.send_html(page("Login Error", f"<div class='wrap'><div class='panel'><h2 style='color:#ff7a00'>OAuth Callback Error</h2><p style='color:#9ca3af;margin-top:8px'>{e}</p></div></div>"))
-
         if path.startswith("/dashboard"):
             if not sess:
                 return self.redir("/login")
