@@ -1,4 +1,4 @@
-import base64, json, os, re, secrets, urllib.error, urllib.parse, urllib.request
+import json, os, re, secrets, urllib.error, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler
 
 BOT_TOKEN = os.getenv("YAPPER_BOT_TOKEN", "yb_23404489.PlvFt0GgzYy6Z-SGp8ZHfSvOh0io7LhVL7KggSTY")
@@ -170,10 +170,9 @@ class handler(BaseHTTPRequestHandler):
             try:
                 tok_data = None
                 last_err = ""
-                b64 = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode()).decode()
                 attempts = [
-                    (json.dumps({"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET, "grant_type": "authorization_code", "code": code, "redirect_uri": REDIR_URI}).encode(), {"Content-Type": "application/json", "Authorization": f"Basic {b64}", "User-Agent": "TicketMintWeb/1.0"}),
-                    (urllib.parse.urlencode({"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET, "grant_type": "authorization_code", "code": code, "redirect_uri": REDIR_URI}).encode(), {"Content-Type": "application/x-www-form-urlencoded", "Authorization": f"Basic {b64}", "User-Agent": "TicketMintWeb/1.0"}),
+                    (urllib.parse.urlencode({"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET, "grant_type": "authorization_code", "code": code, "redirect_uri": REDIR_URI}).encode(), {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/1.0"}),
+                    (json.dumps({"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET, "grant_type": "authorization_code", "code": code, "redirect_uri": REDIR_URI}).encode(), {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/1.0"}),
                 ]
                 for b_data, hdrs in attempts:
                     try:
@@ -187,7 +186,8 @@ class handler(BaseHTTPRequestHandler):
                     raise RuntimeError(last_err or "No access_token returned")
                 access = tok_data.get("access_token", "")
                 me_req = urllib.request.Request(f"https://{Y_HOST}/api/users/@me", headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/1.0"})
-                me = u_dict(json.loads(urllib.request.urlopen(me_req, timeout=8).read().decode()), "user")
+                me_raw = json.loads(urllib.request.urlopen(me_req, timeout=8).read().decode())
+                me = me_raw.get("user", me_raw) if isinstance(me_raw, dict) else {}
                 sid_tok = secrets.token_urlsafe(24)
                 r_cmd("SET", f"tm:sess:{sid_tok}", json.dumps({"id": me.get("id"), "username": me.get("username", "user")}), "EX", "604800")
                 return self.redir("/dashboard", f"tm_sess={sid_tok}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800")
