@@ -12,6 +12,7 @@ OAUTH_AUTH = f"https://{Y_HOST}/oauth/authorize"
 OAUTH_TOKEN = f"https://{Y_HOST}/api/oauth/token"
 SITE_HOST = "ticketmint-web." + "vercel.app"
 REDIR_URI = f"https://{SITE_HOST}/callback"
+INVITE_URL = f"{OAUTH_AUTH}?client_id={urllib.parse.quote(CLIENT_ID)}&redirect_uri={urllib.parse.quote(REDIR_URI)}&response_type=code&scope=bot"
 
 def r_cmd(*args):
     if not REDIS_URL or not REDIS_TOKEN:
@@ -94,11 +95,12 @@ a{text-decoration:none;color:inherit}
 .nav{display:flex;justify-content:space-between;align-items:center;padding:16px 24px;border-bottom:1px solid #1c202b;background:#0e1118;position:sticky;top:0;z-index:10}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:20px;color:#fff}
 .badge{background:#ff7a00;color:#000;padding:4px 9px;border-radius:8px;font-weight:900;font-size:14px}
-.nav-links{display:flex;gap:10px;align-items:center}
+.nav-links{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .btn{padding:10px 18px;border-radius:10px;font-weight:700;font-size:14px;cursor:pointer;border:none;display:inline-flex;align-items:center;gap:8px;transition:.15s}
 .btn-orange{background:#ff7a00;color:#000}
 .btn-orange:hover{background:#ff8f26}
 .btn-dark{background:#181c26;color:#fff;border:1px solid #282e3d}
+.btn-dark:hover{border-color:#ff7a00}
 .hero{max-width:860px;margin:64px auto;padding:0 20px;text-align:center}
 .hero h1{font-size:clamp(32px,6vw,54px);line-height:1.1;margin-bottom:16px;font-weight:900}
 .hero h1 span{color:#ff7a00}
@@ -131,7 +133,8 @@ select,input[type=text]{width:100%;padding:11px 12px;border-radius:9px;backgroun
 """
 
 def page(title, body, user=None):
-    right = f"<a href='/dashboard' class='btn btn-dark'>@{user['username']}</a> <a href='/logout' class='btn btn-dark'>Logout</a>" if user else "<a href='/login' class='btn btn-orange'>Authorize with Yapin'</a>"
+    inv = f"<a href='{INVITE_URL}' class='btn btn-dark'>+ Invite Bot</a>"
+    right = f"{inv} <a href='/dashboard' class='btn btn-dark'>@{user['username']}</a> <a href='/logout' class='btn btn-dark'>Logout</a>" if user else f"{inv} <a href='/login' class='btn btn-orange'>Authorize with Yapin'</a>"
     return f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{title}</title><style>{CSS}</style></head><body><div class='nav'><a href='/' class='brand'><span class='badge'>TM</span> TicketMint</a><div class='nav-links'>{right}</div></div>{body}</body></html>"
 def decode_jwt(tok):
     try:
@@ -257,9 +260,10 @@ class handler(BaseHTTPRequestHandler):
                     mc = f"{s['member_count']} members" if s.get("member_count") else "Ready to configure"
                     rows.append(f"<a href='/dashboard?server={s['id']}' class='srv-row'><div class='srv-left'><div class='srv-ico'>{ico}</div><div><h3 style='font-size:17px;margin-bottom:3px'>{sname}</h3><small style='color:#9ca3af'>{mc}</small></div></div><span style='color:#ff7a00;font-weight:700;font-size:14px'>Configure &rarr;</span></a>")
                 cards = "".join(rows)
-                add_box = "<form method='GET' action='/dashboard' style='display:flex;gap:10px;max-width:440px;margin-top:16px'><input type='text' name='server' placeholder='Paste Server ID to open directly...' required><button class='btn btn-orange' type='submit'>Open</button></form>"
-                empty = f"<div class='panel'><p style='margin-bottom:8px'>Invite <b>TicketMint</b> to your server (or paste your Server ID below) to configure it.</p>{add_box}</div>"
-                return self.send_html(page("Select Server - TicketMint", f"<div class='wrap' style='max-width:760px'><div style='text-align:center;margin:20px 0 32px'><h1 style='font-size:34px;margin-bottom:6px'>Hey, {sess['username']}</h1><p style='color:#9ca3af'>Pick a server to configure.</p></div>{cards if cards else empty}</div>", sess))
+                add_box = f"<div style='display:flex;gap:10px;flex-wrap:wrap;margin-top:14px'><a href='{INVITE_URL}' class='btn btn-orange'>+ Invite TicketMint to Server</a></div><form method='GET' action='/dashboard' style='display:flex;gap:10px;max-width:440px;margin-top:16px'><input type='text' name='server' placeholder='Or paste Server ID directly...' required><button class='btn btn-dark' type='submit'>Open</button></form>"
+                empty = f"<div class='panel'><p style='margin-bottom:8px'>Add <b>TicketMint</b> to your server to configure it here.</p>{add_box}</div>"
+                footer_inv = f"<div style='text-align:center;margin-top:20px'><a href='{INVITE_URL}' class='btn btn-dark'>+ Invite TicketMint to Another Server</a></div>" if cards else ""
+                return self.send_html(page("Select Server - TicketMint", f"<div class='wrap' style='max-width:760px'><div style='text-align:center;margin:20px 0 32px'><h1 style='font-size:34px;margin-bottom:6px'>Hey, {sess['username']}</h1><p style='color:#9ca3af'>Pick a server to configure.</p></div>{cards if cards else empty}{footer_inv}</div>", sess))
 
             srv_obj = next((s for s in admin_srvs if str(s.get("id")) == str(sel_id)), None)
             if not srv_obj:
@@ -291,7 +295,7 @@ class handler(BaseHTTPRequestHandler):
             return self.send_html(page(f"{srv_name} - TicketMint", html, sess))
 
         cta = "Go to Dashboard" if sess else "Authorize & Open Dashboard"
-        home = f"""<div class='hero'><h1>Yapin's cleanest <span>ticket, report & appeal</span> desk.</h1><p>Private support rooms, member reports, and punishment appeals—configured from a fast 24/7 dashboard on desktop and mobile.</p><div class='hero-btns'><a href='/dashboard' class='btn btn-orange'>{cta}</a></div></div><div class='grid'><div class='card'><h3 style='color:#ff7a00;margin-bottom:8px'>Private Ticket Rooms</h3><p style='color:#9ca3af;font-size:14px'>Auto-locked channels visible only to the ticket creator and your chosen Mod roles.</p></div><div class='card'><h3 style='color:#ff7a00;margin-bottom:8px'>Reports & Appeals</h3><p style='color:#9ca3af;font-size:14px'>Built-in pop-up forms for General Help, Member Reports, and Punishment Appeals.</p></div><div class='card'><h3 style='color:#ff7a00;margin-bottom:8px'>24/7 Web Control</h3><p style='color:#9ca3af;font-size:14px'>Manage staff roles, ticket categories, and ticket logs from your phone or PC.</p></div></div>"""
+        home = f"""<div class='hero'><h1>Yapin's cleanest <span>ticket, report & appeal</span> desk.</h1><p>Private support rooms, member reports, and punishment appeals—configured from a fast 24/7 dashboard on desktop and mobile.</p><div class='hero-btns'><a href='/dashboard' class='btn btn-orange'>{cta}</a><a href='{INVITE_URL}' class='btn btn-dark'>+ Invite Bot to Server</a></div></div><div class='grid'><div class='card'><h3 style='color:#ff7a00;margin-bottom:8px'>Private Ticket Rooms</h3><p style='color:#9ca3af;font-size:14px'>Auto-locked channels visible only to the ticket creator and your chosen Mod roles.</p></div><div class='card'><h3 style='color:#ff7a00;margin-bottom:8px'>Reports & Appeals</h3><p style='color:#9ca3af;font-size:14px'>Built-in pop-up forms for General Help, Member Reports, and Punishment Appeals.</p></div><div class='card'><h3 style='color:#ff7a00;margin-bottom:8px'>24/7 Web Control</h3><p style='color:#9ca3af;font-size:14px'>Manage staff roles, ticket categories, and ticket logs from your phone or PC.</p></div></div>"""
         return self.send_html(page("TicketMint - Yapin' Ticket Bot", home, sess))
 
     def do_POST(self):
