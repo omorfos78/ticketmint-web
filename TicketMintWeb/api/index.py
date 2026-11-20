@@ -10,7 +10,8 @@ Y_HOST = "www." + "yapin.gg"
 API_BASE = f"https://{Y_HOST}/api/bot"
 OAUTH_AUTH = f"https://{Y_HOST}/oauth/authorize"
 OAUTH_TOKEN = f"https://{Y_HOST}/api/oauth/token"
-REDIR_URI = "https://vercel.app"
+SITE_HOST = "ticketmint-web." + "vercel.app"
+REDIR_URI = f"https://{SITE_HOST}/callback"
 
 def r_cmd(*args):
     if not REDIS_URL or not REDIS_TOKEN:
