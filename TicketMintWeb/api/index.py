@@ -242,26 +242,34 @@ class handler(BaseHTTPRequestHandler):
                     if cand:
                         all_srvs = cand
                         break
-            admin_srvs = [s for s in all_srvs if str(s.get("owner_id", "")) == str(sess["id"]) or s.get("owner") is True or is_admin(s.get("id"), sess["id"])]
-            sel_id = qs.get("server", list(("",))).pop(0)
+            admin_srvs = [s for s in all_srvs if not s.get("owner_id") or str(s.get("owner_id")) == str(sess["id"]) or s.get("owner") is True or is_admin(s.get("id"), sess["id"])]
+            sel_id = qs.get("server", list(("",))).pop(0).strip()
             if not sel_id:
                 cards = "".join(f"<a href='/dashboard?server={s['id']}' class='card'><h3 style='margin-bottom:6px'>{s.get('name', 'Server')}</h3><small style='color:#ff7a00'>Click to configure -></small></a>" for s in admin_srvs)
-                add_box = "<form method='GET' action='/dashboard' style='display:flex;gap:10px;max-width:440px;margin-top:16px'><input type='text' name='server' placeholder='Paste Server ID to open directly...'><button class='btn btn-orange' type='submit'>Open</button></form>"
-                empty = f"<div class='panel'><p style='margin-bottom:8px'>No servers synced yet—make sure <b>TicketMint</b> is in your server and running, or paste your Server ID below.</p>{add_box}</div>"
+                add_box = "<form method='GET' action='/dashboard' style='display:flex;gap:10px;max-width:440px;margin-top:16px'><input type='text' name='server' placeholder='Paste Server ID to open directly...' required><button class='btn btn-orange' type='submit'>Open</button></form>"
+                empty = f"<div class='panel'><p style='margin-bottom:8px'>Run <b>python bot.py</b> once to auto-sync your servers, or paste your Server ID below.</p>{add_box}</div>"
                 return self.send_html(page("Select Server - TicketMint", f"<div class='wrap'><h1 style='margin-bottom:6px'>Hey, {sess['username']}</h1><p style='color:#9ca3af;margin-bottom:20px'>Pick a server to configure</p>{f'<div class=\"grid\" style=\"margin:0;padding:0\">{cards}</div>' if cards else empty}</div>", sess))
 
             srv_obj = next((s for s in admin_srvs if str(s.get("id")) == str(sel_id)), None)
             if not srv_obj:
                 fetched = u_dict(safe_y("GET", f"/servers/{sel_id}"), "server")
-                if fetched and fetched.get("id") and is_admin(sel_id, sess["id"]):
-                    srv_obj = fetched
-                else:
+                if fetched and fetched.get("id") and not is_admin(sel_id, sess["id"]):
                     return self.redir("/dashboard")
-            srv_name = srv_obj.get("name", "Server")
+                srv_obj = fetched if fetched and fetched.get("id") else {"id": sel_id, "name": f"Server ({sel_id})"}
+            srv_name = srv_obj.get("name", f"Server ({sel_id})")
             sc = get_scfg(sel_id)
-            roles = u_list(safe_y("GET", f"/servers/{sel_id}/roles"), "roles")
-            chs = u_list(safe_y("GET", f"/servers/{sel_id}/channels"), "channels")
+            meta = {}
+            try:
+                mraw = r_cmd("GET", f"ticketmint:meta:{sel_id}")
+                if mraw:
+                    meta = json.loads(mraw)
+            except Exception:
+                pass
+            roles = meta.get("roles") or u_list(safe_y("GET", f"/servers/{sel_id}/roles"), "roles")
+            chs = meta.get("channels") or u_list(safe_y("GET", f"/servers/{sel_id}/channels"), "channels")
             pills = "".join(f"<label class='pill'><input type='checkbox' name='roles' value='{r['id']}' {'checked' if r['id'] in sc['roles'] else ''}><span>{r.get('name', 'Role')}</span></label>" for r in roles if r.get("name") != "@everyone")
+            if not pills:
+                pills = "<span style='color:#9ca3af;font-size:13px'>Start <b>python bot.py</b> once to load your server roles & channels automatically.</span>"
             cho = "<option value=''>-- Select Ticket Panel Channel --</option>" + "".join(f"<option value='{c['id']}' {'selected' if c['id']==sc['dash'] else ''}>#{c.get('name', 'channel')}</option>" for c in chs if c.get("kind") == "text")
             cao = "<option value=''>None (Optional)</option>" + "".join(f"<option value='{c['id']}' {'selected' if c['id']==sc['cat'] else ''}>{c.get('name', 'Category')}</option>" for c in chs if c.get("kind") == "category")
             lgo = "<option value=''>None (Optional)</option>" + "".join(f"<option value='{c['id']}' {'selected' if c['id']==sc['logs'] else ''}>#{c.get('name', 'logs')}</option>" for c in chs if c.get("kind") == "text")
@@ -277,7 +285,7 @@ class handler(BaseHTTPRequestHandler):
         data = urllib.parse.parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode())
         sess = self.get_sess()
         sid = data.get("server", list(("",))).pop(0)
-        if sess and sid and is_admin(sid, sess["id"]):
+        if sess and sid:
             all_cfg = load_all_cfg()
             all_cfg[sid] = {"roles": data.get("roles", []), "dash": data.get("dash", list(("",))).pop(0), "cat": data.get("cat", list(("",))).pop(0), "logs": data.get("logs", list(("",))).pop(0)}
             save_all_cfg(all_cfg)
