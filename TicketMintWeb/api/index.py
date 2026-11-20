@@ -165,8 +165,6 @@ class handler(BaseHTTPRequestHandler):
             code = qs.get("code", list(("",))).pop(0)
             if not code:
                 return self.redir("/")
-            if not CLIENT_SECRET:
-                return self.send_html(page("Missing Secret", "<div class='wrap'><div class='panel'><h2 style='color:#ff7a00'>Missing YAPPER_CLIENT_SECRET</h2><p style='color:#9ca3af;margin-top:8px'>Add <b>YAPPER_CLIENT_SECRET</b> in Vercel -> Settings -> Environment Variables and click <b>Redeploy</b>.</p></div></div>"))
             try:
                 tok_data = None
                 last_err = ""
@@ -185,11 +183,23 @@ class handler(BaseHTTPRequestHandler):
                 if not tok_data or not tok_data.get("access_token"):
                     raise RuntimeError(last_err or "No access_token returned")
                 access = tok_data.get("access_token", "")
-                me_req = urllib.request.Request(f"https://{Y_HOST}/api/users/@me", headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/1.0"})
-                me_raw = json.loads(urllib.request.urlopen(me_req, timeout=8).read().decode())
+                me_raw = tok_data.get("user") if isinstance(tok_data.get("user"), dict) else None
+                if not me_raw:
+                    for ep in ("/api/oauth/userinfo", "/api/users/@me", "/api/oauth/@me", "/api/v1/users/@me"):
+                        try:
+                            me_req = urllib.request.Request(f"https://{Y_HOST}{ep}", headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/1.0"})
+                            cand = json.loads(urllib.request.urlopen(me_req, timeout=8).read().decode())
+                            if isinstance(cand, dict) and (cand.get("id") or cand.get("sub") or isinstance(cand.get("user"), dict)):
+                                me_raw = cand
+                                break
+                        except Exception:
+                            pass
+                if not me_raw:
+                    raise RuntimeError("Could not fetch Yapin user profile")
                 me = me_raw.get("user", me_raw) if isinstance(me_raw, dict) else {}
+                uid = me.get("id") or me.get("sub")
                 sid_tok = secrets.token_urlsafe(24)
-                r_cmd("SET", f"tm:sess:{sid_tok}", json.dumps({"id": me.get("id"), "username": me.get("username", "user")}), "EX", "604800")
+                r_cmd("SET", f"tm:sess:{sid_tok}", json.dumps({"id": uid, "username": me.get("username", "user")}), "EX", "604800")
                 return self.redir("/dashboard", f"tm_sess={sid_tok}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800")
             except Exception as e:
                 return self.send_html(page("Login Error", f"<div class='wrap'><div class='panel'><h2 style='color:#ff7a00'>OAuth Callback Error</h2><p style='color:#9ca3af;margin-top:8px'>{e}</p></div></div>"))
