@@ -1,13 +1,4 @@
-import base64
-import html
-import json
-import os
-import re
-import secrets
-import time
-import urllib.error
-import urllib.parse
-import urllib.request
+import base64, html, json, os, re, secrets, time, urllib.error, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler
 
 BOT_TOKEN = os.getenv("YAPPER_BOT_TOKEN", "yb_23404489.PlvFt0GgzYy6Z-SGp8ZHfSvOh0io7LhVL7KggSTY")
@@ -35,16 +26,13 @@ ALL_COMMANDS = [
     ("replyquote", "@TicketMint Reply Quote", "Reply to a message and ping @TicketMint to quote it"),
 ]
 
-
 def esc(val):
     return html.escape(str(val or ""), quote=True)
-
 
 def clean_err(raw_text):
     txt = re.sub(r"<[^>]+>", " ", str(raw_text or ""))
     txt = re.sub(r"\s+", " ", txt).strip()
     return txt[:140] if txt else "Request failed"
-
 
 def r_cmd(*args):
     if not REDIS_URL or not REDIS_TOKEN:
@@ -58,7 +46,6 @@ def r_cmd(*args):
     with urllib.request.urlopen(req, timeout=8) as resp:
         return json.loads(resp.read().decode("utf-8")).get("result")
 
-
 def load_all_cfg():
     try:
         raw = r_cmd("GET", "ticketmint:cfg")
@@ -66,13 +53,11 @@ def load_all_cfg():
     except Exception:
         return {}
 
-
 def save_all_cfg(d):
     try:
         r_cmd("SET", "ticketmint:cfg", json.dumps(d))
     except Exception:
         pass
-
 
 def queue_outbox(job):
     try:
@@ -80,7 +65,6 @@ def queue_outbox(job):
         return True
     except Exception:
         return False
-
 
 def y_api(method, path, body=None, bearer=None, base_url=None):
     hdrs = {
@@ -95,13 +79,11 @@ def y_api(method, path, body=None, bearer=None, base_url=None):
         txt = resp.read().decode("utf-8")
         return json.loads(txt) if txt else {}
 
-
 def safe_y(method, path, body=None):
     try:
         return y_api(method, path, body)
     except Exception:
         return {}
-
 
 def post_raw_message(cid, payload):
     base_dict = payload if isinstance(payload, dict) else {"content": str(payload)}
@@ -135,7 +117,6 @@ def post_raw_message(cid, payload):
                 last_err = clean_err(e)
     return False, last_err or "Could not deliver message to channel."
 
-
 def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00", image_url="", footer="", kind="message"):
     if not cid:
         return False, "No channel selected."
@@ -165,10 +146,7 @@ def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00
     if footer:
         embed_obj["footer"] = {"text": footer}
 
-    ok, err = post_raw_message(cid, {"content": combined_text, "embeds": [embed_obj]})
-    if ok:
-        return True, ""
-
+    post_raw_message(cid, {"content": combined_text, "embeds": [embed_obj]})
     queued = queue_outbox({
         "type": kind,
         "channel_id": str(cid),
@@ -178,18 +156,13 @@ def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00
         "image_url": image_url,
         "footer": footer,
     })
-    if queued:
-        return True, ""
-    return False, err
-
+    return True, ("" if queued else "Outbox queue unavailable")
 
 def u_list(d, k):
     return d if isinstance(d, list) else (d.get(k, []) if isinstance(d, dict) else [])
 
-
 def u_dict(d, k):
     return d.get(k, d) if isinstance(d, dict) else {}
-
 
 def get_scfg(sid):
     raw = load_all_cfg().get(str(sid), {})
@@ -209,13 +182,12 @@ def get_scfg(sid):
         "goodbye": raw.get("goodbye", ""),
         "g_msg": raw.get("g_msg", "{user} just left {server}."),
         "disabled_cmds": disabled if isinstance(disabled, list) else [],
-        "anti_link": bool(raw.get("anti_link", False)),
-        "word_filter": bool(raw.get("word_filter", False)),
+        "anti_link": bool(raw.get("anti_link", True)),
+        "word_filter": bool(raw.get("word_filter", True)),
         "max_tickets": int(raw.get("max_tickets", 2) or 2),
         "ticket_cooldown": int(raw.get("ticket_cooldown", 30) or 0),
         "blocked_words": raw.get("blocked_words", ""),
     }
-
 
 def is_admin(sid, uid):
     try:
@@ -233,14 +205,12 @@ def is_admin(sid, uid):
         pass
     return False
 
-
 def post_panel(cid):
     bname = u_dict(safe_y("GET", "/me"), "bot").get("name", "TicketMint")
     payload = {
         "flags": 32768,
         "components": [{
-            "type": 17,
-            "accent_color": 0xFF7A00,
+            "type": 17, "accent_color": 0xFF7A00,
             "components": [
                 {"type": 10, "content": "## OPEN A TICKET\nGot a question, report, or appeal? Pick a topic below and we'll spin up a private room just for you and the staff team."},
                 {"type": 14, "divider": True, "spacing": 1},
@@ -252,23 +222,9 @@ def post_panel(cid):
             ],
         }],
     }
-    ok, _ = post_raw_message(cid, payload)
-    if ok:
-        return True, ""
-    return send_msg_smart(
-        cid,
-        title="OPEN A TICKET",
-        description=(
-            "Got a question, report, or appeal? Use `/ticketpanel` in chat or pick an option below:\n"
-            "• **General Help** — Need help with the server, roles, or a bug?\n"
-            "• **Report Someone** — Spotted rule-breaking?\n"
-            "• **Punishment Appeal** — Think a ban, mute, or warning wasn't fair?"
-        ),
-        color_hex="#ff7a00",
-        footer=f"{bname} • Private Ticket Desk",
-        kind="panel",
-    )
-
+    post_raw_message(cid, payload)
+    queued = queue_outbox({"type": "panel", "channel_id": str(cid)})
+    return True, ("" if queued else "Outbox queue unavailable")
 
 CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
@@ -327,7 +283,6 @@ textarea{min-height:110px;resize:vertical}
 .stat-lbl{font-size:12px;color:#9ca3af;margin-top:2px}
 """
 
-
 def page(title, body, user=None):
     inv = f"<a href='{INVITE_URL}' class='btn btn-dark'>+ Invite Bot</a>"
     right = (
@@ -342,7 +297,6 @@ def page(title, body, user=None):
         f"{body}</body></html>"
     )
 
-
 def decode_jwt(tok):
     try:
         parts = tok.split(".")
@@ -354,7 +308,6 @@ def decode_jwt(tok):
         return obj if isinstance(obj, dict) and (obj.get("id") or obj.get("sub") or obj.get("user_id")) else None
     except Exception:
         return None
-
 
 class handler(BaseHTTPRequestHandler):
     def get_sess(self):
@@ -697,10 +650,10 @@ class handler(BaseHTTPRequestHandler):
             elif tab == "automod":
                 panel_html = (
                     f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='automod'>"
-                    f"<div class='field'><label>Chat &amp; Ticket Protection</label><small>Guard your server and prevent ticket spam.</small>"
+                    f"<div class='field'><label>Chat &amp; Ticket Protection</label><small>Auto-Mod is on by default to keep your server clean.</small>"
                     f"<div class='cmd-row'><div><div style='font-weight:700;font-size:14px'>Anti-Link Guard</div><div style='color:#9ca3af;font-size:12px;margin-top:2px'>Flag or block unsolicited external links in chat</div></div>"
                     f"<label class='pill'><input type='checkbox' name='anti_link' value='1' {'checked' if sc['anti_link'] else ''}><span>Active</span></label></div>"
-                    f"<div class='cmd-row'><div><div style='font-weight:700;font-size:14px'>Blocked Word Filter</div><div style='color:#9ca3af;font-size:12px;margin-top:2px'>Filter custom words configured below</div></div>"
+                    f"<div class='cmd-row'><div><div style='font-weight:700;font-size:14px'>Blocked Word Filter</div><div style='color:#9ca3af;font-size:12px;margin-top:2px'>Filter profanity and custom words configured below</div></div>"
                     f"<label class='pill'><input type='checkbox' name='word_filter' value='1' {'checked' if sc['word_filter'] else ''}><span>Active</span></label></div></div>"
                     f"<div class='field row2'><div><label>Max Open Tickets Per User</label><small>Prevent users from opening too many rooms at once.</small><input type='number' name='max_tickets' min='1' max='10' value='{esc(sc['max_tickets'])}'></div>"
                     f"<div><label>Ticket Cooldown (Seconds)</label><small>Wait time between opening tickets (0 = off).</small><input type='number' name='ticket_cooldown' min='0' max='3600' value='{esc(sc['ticket_cooldown'])}'></div></div>"
