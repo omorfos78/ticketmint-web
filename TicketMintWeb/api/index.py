@@ -4,6 +4,7 @@ import json
 import os
 import re
 import secrets
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -39,6 +40,12 @@ def esc(val):
     return html.escape(str(val or ""), quote=True)
 
 
+def clean_err(raw_text):
+    txt = re.sub(r"<[^>]+>", " ", str(raw_text or ""))
+    txt = re.sub(r"\s+", " ", txt).strip()
+    return txt[:140] if txt else "Request failed"
+
+
 def r_cmd(*args):
     if not REDIS_URL or not REDIS_TOKEN:
         return None
@@ -67,14 +74,23 @@ def save_all_cfg(d):
         pass
 
 
-def y_api(method, path, body=None, bearer=None):
+def queue_outbox(job):
+    try:
+        r_cmd("RPUSH", "ticketmint:outbox", json.dumps({**job, "ts": int(time.time())}))
+        return True
+    except Exception:
+        return False
+
+
+def y_api(method, path, body=None, bearer=None, base_url=None):
     hdrs = {
         "Authorization": f"Bearer {bearer or BOT_TOKEN}",
         "Content-Type": "application/json",
         "User-Agent": "TicketMintWeb/1.0",
     }
     data = json.dumps(body).encode("utf-8") if body is not None else None
-    req = urllib.request.Request(f"{API_BASE}{path}", data=data, headers=hdrs, method=method)
+    root = (base_url or API_BASE).rstrip("/")
+    req = urllib.request.Request(f"{root}{path}", data=data, headers=hdrs, method=method)
     with urllib.request.urlopen(req, timeout=8) as resp:
         txt = resp.read().decode("utf-8")
         return json.loads(txt) if txt else {}
@@ -87,7 +103,40 @@ def safe_y(method, path, body=None):
         return {}
 
 
-def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00", image_url="", footer=""):
+def post_raw_message(cid, payload):
+    base_dict = payload if isinstance(payload, dict) else {"content": str(payload)}
+    embeds_list = base_dict.get("embeds") if isinstance(base_dict.get("embeds"), list) else []
+    first_desc = embeds_list[0].get("description", "") if embeds_list and isinstance(embeds_list[0], dict) else ""
+    plain_text = base_dict.get("content") or first_desc or "TicketMint"
+
+    variants = [
+        base_dict,
+        {"content": plain_text},
+        {"text": plain_text},
+        {"message": plain_text},
+    ]
+    endpoints = [
+        (API_BASE, f"/channels/{cid}/messages"),
+        (f"https://{Y_HOST}/api", f"/bot/channels/{cid}/messages"),
+        (API_BASE, "/messages"),
+        (f"https://{Y_HOST}/api", "/bot/messages"),
+    ]
+    last_err = ""
+    for base, ep in endpoints:
+        for body in variants:
+            send_body = {**body, "channel_id": cid} if ep.endswith("/messages") and not ep.startswith("/channels/") else body
+            try:
+                y_api("POST", ep, body=send_body, base_url=base)
+                return True, ""
+            except urllib.error.HTTPError as he:
+                err_body = he.read().decode("utf-8", errors="ignore")
+                last_err = f"HTTP {he.code}: {clean_err(err_body)}"
+            except Exception as e:
+                last_err = clean_err(e)
+    return False, last_err or "Could not deliver message to channel."
+
+
+def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00", image_url="", footer="", kind="message"):
     if not cid:
         return False, "No channel selected."
     try:
@@ -106,30 +155,32 @@ def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00
         parts.append(image_url)
     if footer:
         parts.append(f"-# {footer}")
-    fallback_content = "\n\n".join([p for p in parts if p]).strip() or "TicketMint"
+    combined_text = "\n\n".join([p for p in parts if p]).strip() or "TicketMint"
 
-    embed_obj = {"title": title or None, "description": description or "", "color": c_int}
-    if not title:
-        embed_obj.pop("title", None)
+    embed_obj = {"description": description or "", "color": c_int}
+    if title:
+        embed_obj["title"] = title
     if image_url:
         embed_obj["image"] = {"url": image_url}
     if footer:
         embed_obj["footer"] = {"text": footer}
 
-    last_err = ""
-    for payload in (
-        {"content": content or "", "embeds": [embed_obj]},
-        {"content": fallback_content},
-    ):
-        try:
-            y_api("POST", f"/channels/{cid}/messages", payload)
-            return True, ""
-        except urllib.error.HTTPError as he:
-            body_err = he.read().decode("utf-8", errors="ignore")
-            last_err = f"API {he.code}: {body_err[:180]}"
-        except Exception as e:
-            last_err = str(e)[:180]
-    return False, last_err or "Failed to send message."
+    ok, err = post_raw_message(cid, {"content": combined_text, "embeds": [embed_obj]})
+    if ok:
+        return True, ""
+
+    queued = queue_outbox({
+        "type": kind,
+        "channel_id": str(cid),
+        "text": combined_text,
+        "title": title,
+        "description": description,
+        "image_url": image_url,
+        "footer": footer,
+    })
+    if queued:
+        return True, ""
+    return False, err
 
 
 def u_list(d, k):
@@ -144,6 +195,7 @@ def get_scfg(sid):
     raw = load_all_cfg().get(str(sid), {})
     if isinstance(raw, list):
         raw = {"roles": raw}
+    disabled = raw.get("disabled_cmds", [])
     return {
         "roles": raw.get("roles", []),
         "dash": raw.get("dash", ""),
@@ -156,7 +208,7 @@ def get_scfg(sid):
         "w_color": raw.get("w_color", "#ff7a00"),
         "goodbye": raw.get("goodbye", ""),
         "g_msg": raw.get("g_msg", "{user} just left {server}."),
-        "disabled_cmds": raw.get("disabled_cmds", []),
+        "disabled_cmds": disabled if isinstance(disabled, list) else [],
         "anti_link": bool(raw.get("anti_link", False)),
         "word_filter": bool(raw.get("word_filter", False)),
         "max_tickets": int(raw.get("max_tickets", 2) or 2),
@@ -200,22 +252,22 @@ def post_panel(cid):
             ],
         }],
     }
-    try:
-        y_api("POST", f"/channels/{cid}/messages", payload)
+    ok, _ = post_raw_message(cid, payload)
+    if ok:
         return True, ""
-    except Exception:
-        return send_msg_smart(
-            cid,
-            title="OPEN A TICKET",
-            description=(
-                "Got a question, report, or appeal? Use `/ticketpanel` in chat or click a button below:\n"
-                "• **General Help** — Need help with the server, roles, or a bug?\n"
-                "• **Report Someone** — Spotted rule-breaking?\n"
-                "• **Punishment Appeal** — Think a ban, mute, or warning wasn't fair?"
-            ),
-            color_hex="#ff7a00",
-            footer=f"{bname} • Private Ticket Desk",
-        )
+    return send_msg_smart(
+        cid,
+        title="OPEN A TICKET",
+        description=(
+            "Got a question, report, or appeal? Use `/ticketpanel` in chat or pick an option below:\n"
+            "• **General Help** — Need help with the server, roles, or a bug?\n"
+            "• **Report Someone** — Spotted rule-breaking?\n"
+            "• **Punishment Appeal** — Think a ban, mute, or warning wasn't fair?"
+        ),
+        color_hex="#ff7a00",
+        footer=f"{bname} • Private Ticket Desk",
+        kind="panel",
+    )
 
 
 CSS = """
@@ -471,7 +523,8 @@ class handler(BaseHTTPRequestHandler):
                 )
 
             srv_obj = next((s for s in admin_srvs if str(s.get("id")) == str(sel_id)), None)
-            fetched = u_dict(safe_y("GET", f"/servers/{sel_id}"), "server")
+            srv_full = safe_y("GET", f"/servers/{sel_id}")
+            fetched = u_dict(srv_full, "server")
             if not srv_obj:
                 if fetched and fetched.get("id") and not is_admin(sel_id, sess["id"]):
                     return self.redir("/dashboard")
@@ -492,8 +545,24 @@ class handler(BaseHTTPRequestHandler):
             roles = u_list(safe_y("GET", f"/servers/{sel_id}/roles"), "roles") or meta.get("roles", [])
             chs_raw = safe_y("GET", f"/servers/{sel_id}/channels")
             chs = u_list(chs_raw, "channels") or meta.get("channels", [])
-            extra_cats = chs_raw.get("categories", []) if isinstance(chs_raw, dict) else []
-            if roles or chs:
+
+            def pick_name(obj, fallback=""):
+                if not isinstance(obj, dict):
+                    return fallback
+                for k in ("name", "title", "label", "category_name", "parent_name", "display_name"):
+                    v = obj.get(k)
+                    if isinstance(v, str) and v.strip():
+                        return v.strip()
+                return fallback
+
+            extra_cats = []
+            for src in (chs_raw, fetched, srv_full):
+                if isinstance(src, dict):
+                    for key in ("categories", "folders", "groups"):
+                        if isinstance(src.get(key), list):
+                            extra_cats.extend(src[key])
+
+            if roles or chs or extra_cats:
                 try:
                     r_cmd("SET", f"ticketmint:meta:{sel_id}", json.dumps({"roles": roles, "channels": chs, "categories": extra_cats}))
                 except Exception:
@@ -511,30 +580,39 @@ class handler(BaseHTTPRequestHandler):
                 t = str(c.get("type", "")).lower()
                 return k in ("voice", "stage") or t in ("voice", "stage", "2", "13")
 
-            txt_chs = [c for c in chs if not is_cat_item(c) and not is_voice_item(c)]
+            txt_chs = [c for c in chs if isinstance(c, dict) and not is_cat_item(c) and not is_voice_item(c)]
             if not txt_chs:
-                txt_chs = [c for c in chs if not is_cat_item(c)]
+                txt_chs = [c for c in chs if isinstance(c, dict) and not is_cat_item(c)]
 
-            known_ids = {str(c.get("id", "")) for c in chs}
-            parent_ids = {
-                str(c.get("parent_id") or c.get("category_id") or c.get("parentId") or "")
-                for c in chs
-                if (c.get("parent_id") or c.get("category_id") or c.get("parentId"))
-            }
             cat_map = {}
             for ec in extra_cats:
                 if isinstance(ec, dict) and ec.get("id"):
-                    cat_map[str(ec["id"])] = ec.get("name") or ec.get("title") or f"Category ({ec['id']})"
+                    cid = str(ec["id"])
+                    cname = pick_name(ec)
+                    if cname:
+                        cat_map[cid] = cname
             for c in chs:
-                if is_cat_item(c) and c.get("id"):
-                    cat_map[str(c["id"])] = c.get("name") or c.get("title") or f"Category ({c['id']})"
+                if isinstance(c, dict):
+                    if is_cat_item(c) and c.get("id"):
+                        cid = str(c["id"])
+                        cname = pick_name(c)
+                        if cname and cid not in cat_map:
+                            cat_map[cid] = cname
+                    pid = c.get("parent_id") or c.get("category_id") or c.get("parentId")
+                    pname = c.get("parent_name") or c.get("category_name") or c.get("parentName")
+                    if pid and isinstance(pname, str) and pname.strip() and str(pid) not in cat_map:
+                        cat_map[str(pid)] = pname.strip()
+
+            parent_ids = {
+                str(c.get("parent_id") or c.get("category_id") or c.get("parentId") or "")
+                for c in chs
+                if isinstance(c, dict) and (c.get("parent_id") or c.get("category_id") or c.get("parentId"))
+            }
             for pid in parent_ids:
-                if pid and pid not in known_ids and pid not in cat_map:
+                if pid and pid not in cat_map:
                     cat_map[pid] = f"Category ({pid[:8]})"
 
             cat_chs = [{"id": cid, "name": cname} for cid, cname in cat_map.items()]
-            if not cat_chs:
-                cat_chs = [{"id": str(c.get("id", "")), "name": c.get("name", "Channel")} for c in chs if c.get("id")]
 
             def ch_opts(items, selected_id, empty_label, prefix="#"):
                 out = [f"<option value=''>{esc(empty_label)}</option>"]
@@ -548,9 +626,9 @@ class handler(BaseHTTPRequestHandler):
             if qs.get("saved"):
                 notice = "<div style='background:#16a34a22;border:1px solid #16a34a;color:#4ade80;padding:10px 14px;border-radius:9px;margin-bottom:16px'>Saved changes!</div>"
             elif qs.get("sent"):
-                notice = "<div style='background:#16a34a22;border:1px solid #16a34a;color:#4ade80;padding:10px 14px;border-radius:9px;margin-bottom:16px'>Sent to your server channel!</div>"
+                notice = "<div style='background:#16a34a22;border:1px solid #16a34a;color:#4ade80;padding:10px 14px;border-radius:9px;margin-bottom:16px'>Dispatched to your server channel!</div>"
             elif qs.get("err"):
-                notice = f"<div style='background:#dc262622;border:1px solid #dc2626;color:#f87171;padding:10px 14px;border-radius:9px;margin-bottom:16px'>{esc(qs.get('err', ['Error'])[0])}</div>"
+                notice = f"<div style='background:#dc262622;border:1px solid #dc2626;color:#f87171;padding:10px 14px;border-radius:9px;margin-bottom:16px'>{esc(clean_err(qs.get('err', ['Error'])[0]))}</div>"
 
             active_cmds = len(ALL_COMMANDS) - len(set(sc["disabled_cmds"]))
             stats_bar = (
@@ -558,7 +636,7 @@ class handler(BaseHTTPRequestHandler):
                 f"<div class='stat-box'><div class='stat-num'>{len(sc['roles'])}</div><div class='stat-lbl'>Mod Roles</div></div>"
                 f"<div class='stat-box'><div class='stat-num'>{len(txt_chs)}</div><div class='stat-lbl'>Text Channels</div></div>"
                 f"<div class='stat-box'><div class='stat-num'>{len(cat_chs)}</div><div class='stat-lbl'>Categories</div></div>"
-                f"<div class='stat-box'><div class='stat-num'>{active_cmds}/{len(ALL_COMMANDS)}</div><div class='stat-lbl'>Active Commands</div></div>"
+                f"<div class='stat-box'><div class='stat-num'>{active_cmds}/{len(ALL_COMMANDS)}</div><div class='stat-lbl'>Enabled Commands</div></div>"
                 f"</div>"
             )
 
@@ -639,7 +717,7 @@ class handler(BaseHTTPRequestHandler):
                 )
                 panel_html = (
                     f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='commands'>"
-                    f"<div class='field'><label>Commands &amp; Tools</label><small>Toggle which TicketMint commands and features are active in <b>{esc(srv_name)}</b>.</small>{cmd_items}</div>"
+                    f"<div class='field'><label>Commands &amp; Tools</label><small>All commands are enabled by default in <b>{esc(srv_name)}</b>. Toggle any off if needed.</small>{cmd_items}</div>"
                     f"<div style='display:flex;gap:10px;flex-wrap:wrap;padding-top:16px'><button name='act' value='save' class='btn btn-orange'>Save Command Settings</button></div></form>"
                 )
 
@@ -693,7 +771,7 @@ class handler(BaseHTTPRequestHandler):
                         return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=tickets&err={urllib.parse.quote(err)}")
                     return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=tickets&sent=1")
                 if act == "modping":
-                    ok, err = send_msg_smart(cur["dash"], content=f"Staff check-in triggered by @{sess['username']} • TicketMint")
+                    ok, err = send_msg_smart(cur["dash"], content=f"Staff check-in triggered by @{sess['username']} • TicketMint", kind="modping")
                     if not ok:
                         return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=tickets&err={urllib.parse.quote(err)}")
                     return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=tickets&sent=1")
@@ -723,6 +801,7 @@ class handler(BaseHTTPRequestHandler):
                         color_hex=cur["w_color"],
                         image_url=cur["w_banner"],
                         footer="Test Welcome Card • TicketMint",
+                        kind="welcome_test",
                     )
                     if not ok:
                         return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=welcome&err={urllib.parse.quote(err)}")
@@ -744,6 +823,7 @@ class handler(BaseHTTPRequestHandler):
                     description=ann_body,
                     color_hex="#ff7a00",
                     footer=f"Announced by @{sess['username']} • TicketMint",
+                    kind="announce",
                 )
                 if not ok:
                     return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=announce&err={urllib.parse.quote(err)}")
