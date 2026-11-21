@@ -1,16 +1,27 @@
-import base64, gzip, html, json, os, random, re, secrets, time, urllib.error, urllib.parse, urllib.request
+import base64
+import gzip
+import html
+import json
+import os
+import random
+import re
+import secrets
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler
 
 BOT_TOKEN = os.getenv("YAPPER_BOT_TOKEN", "yb_23404489.PlvFt0GgzYy6Z-SGp8ZHfSvOh0io7LhVL7KggSTY")
-CLIENT_ID = "c6cfe2fd-8a73-47c3-98dd-03d2da87b2d0"
-CLIENT_SECRET = "ycs_1CvP3dQdoKpC-UXSfHQz2vdNW21PSfKXWycQdd_x3FI"
+CLIENT_ID = (os.getenv("YAPPER_CLIENT_ID") or os.getenv("CLIENT_ID") or "c6cfe2fd-8a73-47c3-98dd-03d2da87b2d0").strip()
+CLIENT_SECRET = (os.getenv("YAPPER_CLIENT_SECRET") or os.getenv("CLIENT_SECRET") or "ycs_1CvP3dQdoKpC-UXSfHQz2vdNW21PSfKXWycQdd_x3FI").strip()
 REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL", "https://profound-seasnail-108379.upstash.io").rstrip("/")
 REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "gQAAAAAAAadbAAIgcDI4MTE2MjY4ODFkZGM0ZmQ1Yjg0NGE5MmU5YTAwYTI3Nw")
 Y_HOST = "www." + "yapin.gg"
 API_BASE = f"https://{Y_HOST}/api/bot"
 OAUTH_AUTH = f"https://{Y_HOST}/oauth/authorize"
 OAUTH_TOKEN = f"https://{Y_HOST}/api/oauth/token"
-SITE_HOST = "ticketmint-web." + "vercel.app"
+SITE_HOST = os.getenv("SITE_HOST", "ticketmint-web." + "vercel.app").strip()
 REDIR_URI = f"https://{SITE_HOST}/callback"
 INVITE_URL = "https://" + "yapin.gg/bot/23404489-32ad-42d7-ac93-c1ba71cb2574"
 
@@ -65,6 +76,23 @@ def clean_err(raw_text):
     return txt[:140] if txt else "Request failed"
 
 
+def format_ping_mention(raw_ping):
+    val = str(raw_ping or "").strip()
+    if not val:
+        return ""
+    low = val.lower()
+    if low in ("everyone", "@everyone"):
+        return "@everyone"
+    if low in ("here", "@here"):
+        return "@here"
+    if val.startswith("<@&") and val.endswith(">"):
+        return val
+    rid = re.sub(r"[<@&>]", "", val).strip()
+    if rid.isdigit():
+        return f"<@&{rid}>"
+    return val if val.startswith("@") else f"@{val}"
+
+
 def r_cmd(*args):
     if not REDIS_URL or not REDIS_TOKEN:
         return None
@@ -88,23 +116,28 @@ def r_cmd(*args):
 def load_all_cfg():
     try:
         raw = r_cmd("GET", "ticketmint:cfg")
-        return json.loads(raw) if raw else {}
+        parsed = json.loads(raw) if raw else {}
+        return parsed if isinstance(parsed, dict) else {}
     except Exception:
         return {}
 
 
 def save_all_cfg(d, sid=None):
+    if not isinstance(d, dict):
+        return
     try:
         r_cmd("SET", "ticketmint:cfg", json.dumps(d))
-        if sid and sid in d:
-            r_cmd("SET", f"ticketmint:cfg:{sid}", json.dumps(d[sid]))
+        if sid and str(sid) in d:
+            r_cmd("SET", f"ticketmint:cfg:{sid}", json.dumps(d[str(sid)]))
     except Exception:
         pass
 
 
 def queue_outbox(job):
     try:
-        r_cmd("RPUSH", "ticketmint:outbox", json.dumps({**job, "ts": int(time.time())}))
+        payload = dict(job) if isinstance(job, dict) else {}
+        payload["ts"] = int(time.time())
+        r_cmd("RPUSH", "ticketmint:outbox", json.dumps(payload))
         return True
     except Exception:
         return False
@@ -114,7 +147,7 @@ def y_api(method, path, body=None, bearer=None, base_url=None):
     hdrs = {
         "Authorization": f"Bearer {bearer or BOT_TOKEN}",
         "Content-Type": "application/json",
-        "User-Agent": "TicketMintWeb/2.7",
+        "User-Agent": "Mozilla/5.0",
     }
     data = json.dumps(body).encode("utf-8") if body is not None else None
     root = (base_url or API_BASE).rstrip("/")
@@ -317,39 +350,41 @@ def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00
     except Exception:
         c_int = 0xFF7A00
 
-    parts = []
-    if ping:
-        parts.append(ping)
-    if content and content != ping:
-        parts.append(content)
-    if title:
-        parts.append(f"**{title}**")
-    if description:
-        parts.append(description)
-    if image_url:
-        parts.append(image_url)
-    if footer:
-        parts.append(f"-# {footer}")
-    combined_text = "\n\n".join([p for p in parts if p]).strip() or "TicketMint"
+    ping_formatted = format_ping_mention(ping)
+    header_parts = []
+    if ping_formatted:
+        header_parts.append(ping_formatted)
+    if content and content.strip() and content.strip() != ping_formatted and content.strip() != str(ping or "").strip():
+        header_parts.append(content.strip())
+    top_content = " ".join(header_parts).strip()
 
-    embed_obj = {"description": description or "", "color": c_int}
-    if title:
-        embed_obj["title"] = title
-    if image_url:
-        embed_obj["image"] = {"url": image_url}
-    if footer:
-        embed_obj["footer"] = {"text": footer}
+    body_text = str(description or "").strip()
+    if not top_content and not body_text:
+        top_content = f"**{title}**" if title else "TicketMint"
 
-    post_raw_message(cid, {"content": combined_text, "embeds": [embed_obj]})
+    embed_obj = {"description": body_text or "", "color": c_int}
+    if title:
+        embed_obj["title"] = str(title).strip()
+    if image_url:
+        embed_obj["image"] = {"url": str(image_url).strip()}
+    if footer:
+        embed_obj["footer"] = {"text": str(footer).strip()}
+
+    payload = {"embeds": [embed_obj]}
+    if top_content:
+        payload["content"] = top_content
+
+    post_raw_message(cid, payload)
     job = {
         "type": kind,
         "channel_id": str(cid),
-        "ping": ping,
-        "text": combined_text,
-        "title": title,
-        "description": description,
-        "image_url": image_url,
-        "footer": footer,
+        "ping": ping_formatted,
+        "content": top_content,
+        "text": top_content or body_text,
+        "title": str(title or "").strip(),
+        "description": body_text,
+        "image_url": str(image_url or "").strip(),
+        "footer": str(footer or "").strip(),
         "color": f"#{str(color_hex or '#ff7a00').lstrip('#')}",
     }
     if isinstance(extra, dict):
@@ -375,7 +410,7 @@ def u_list(d, k):
 
 
 def u_dict(d, k):
-    return d.get(k, d) if isinstance(d, dict) else {}
+    return d.get(k, d) if isinstance(d, dict) and isinstance(d.get(k), dict) else (d if isinstance(d, dict) else {})
 
 
 def get_scfg(sid):
@@ -436,23 +471,41 @@ def get_scfg(sid):
 
 
 def is_admin(sid, uid):
+    if not sid or not uid:
+        return False
+    cache_key = f"tm:admin:{sid}:{uid}"
+    try:
+        cached = r_cmd("GET", cache_key)
+        if cached in ("1", "0"):
+            return cached == "1"
+    except Exception:
+        pass
+    allowed = False
     try:
         srv = u_dict(safe_y("GET", f"/servers/{sid}"), "server")
         if str(srv.get("owner_id", "")) == str(uid):
-            return True
-        mem = u_dict(safe_y("GET", f"/servers/{sid}/members/{uid}"), "member")
-        mr = set(mem.get("roles", []) or [])
-        for r in u_list(safe_y("GET", f"/servers/{sid}/roles"), "roles"):
-            if isinstance(r, dict) and r.get("id") in mr:
-                p = r.get("permissions", {})
-                if isinstance(p, dict) and (p.get("administrator") or p.get("manage_server") or p.get("manage_channels")):
-                    return True
+            allowed = True
+        else:
+            mem = u_dict(safe_y("GET", f"/servers/{sid}/members/{uid}"), "member")
+            mr = set(str(r) for r in (mem.get("roles", []) or []))
+            for r in u_list(safe_y("GET", f"/servers/{sid}/roles"), "roles"):
+                if isinstance(r, dict) and str(r.get("id")) in mr:
+                    p = r.get("permissions", {})
+                    if isinstance(p, dict) and (p.get("administrator") or p.get("manage_server") or p.get("manage_channels")):
+                        allowed = True
+                        break
+    except Exception:
+        allowed = False
+    try:
+        r_cmd("SET", cache_key, "1" if allowed else "0", "EX", "300")
     except Exception:
         pass
-    return False
+    return allowed
 
 
 def post_panel(cid, sid=""):
+    if not cid:
+        return False, "Select a Ticket Panel Channel first."
     bname = u_dict(safe_y("GET", "/me"), "bot").get("name", "TicketMint")
     payload = {
         "flags": 32768,
@@ -469,12 +522,16 @@ def post_panel(cid, sid=""):
             ],
         }],
     }
-    post_raw_message(cid, payload)
+    ok, err = post_raw_message(cid, payload)
     queued = queue_outbox({"type": "panel", "server_id": str(sid), "channel_id": str(cid)})
-    return True, ("" if queued else "Outbox queue unavailable")
+    if ok:
+        return True, ""
+    return (True, "") if queued else (False, err or "Could not post ticket panel.")
 
 
 def post_verify_panel(cid, sname="Server", sid=""):
+    if not cid:
+        return False, "Select a Verification Channel first."
     bname = u_dict(safe_y("GET", "/me"), "bot").get("name", "TicketMint")
     payload = {
         "embeds": [{
@@ -488,9 +545,11 @@ def post_verify_panel(cid, sname="Server", sid=""):
             "components": [{"type": 2, "style": 1, "label": "Verify", "custom_id": "verify:claim"}],
         }],
     }
-    post_raw_message(cid, payload)
+    ok, err = post_raw_message(cid, payload)
     queued = queue_outbox({"type": "verify_panel", "server_id": str(sid), "channel_id": str(cid), "server_name": sname})
-    return True, ("" if queued else "Outbox queue unavailable")
+    if ok:
+        return True, ""
+    return (True, "") if queued else (False, err or "Could not post verification panel.")
 
 
 CSS = """
@@ -587,6 +646,13 @@ function tmSwitchTab(tabName){
     window.history.replaceState({},'',url.toString());
   }catch(e){}
 }
+function tmCycleRoleSelect(selId, statusId){
+  var sel=document.getElementById(selId);
+  if(!sel||!sel.options.length)return;
+  sel.selectedIndex=(sel.selectedIndex+1)%sel.options.length;
+  var st=document.getElementById(statusId);
+  if(st){st.textContent='Selected Ping Role: '+sel.options[sel.selectedIndex].textContent;}
+}
 document.addEventListener('submit',function(e){
   var f=e.target;
   if(!f||f.tagName!=='FORM')return;
@@ -650,7 +716,8 @@ class handler(BaseHTTPRequestHandler):
             return None
         try:
             raw = r_cmd("GET", f"tm:sess:{m.group(1)}")
-            return json.loads(raw) if raw else None
+            parsed = json.loads(raw) if raw else None
+            return parsed if isinstance(parsed, dict) and parsed.get("id") else None
         except Exception:
             return None
 
@@ -719,7 +786,7 @@ class handler(BaseHTTPRequestHandler):
                             "code": code,
                             "redirect_uri": REDIR_URI,
                         }).encode("utf-8"),
-                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/2.7"},
+                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "Mozilla/5.0"},
                     ),
                     (
                         json.dumps({
@@ -729,7 +796,7 @@ class handler(BaseHTTPRequestHandler):
                             "code": code,
                             "redirect_uri": REDIR_URI,
                         }).encode("utf-8"),
-                        {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/2.7"},
+                        {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
                     ),
                 ]
                 for b_data, hdrs in attempts:
@@ -749,7 +816,7 @@ class handler(BaseHTTPRequestHandler):
                         try:
                             me_req = urllib.request.Request(
                                 f"https://{Y_HOST}{ep}",
-                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/2.7"},
+                                headers={"Authorization": f"Bearer {access}", "User-Agent": "Mozilla/5.0"},
                             )
                             cand = json.loads(urllib.request.urlopen(me_req, timeout=5).read().decode("utf-8"))
                             if isinstance(cand, dict):
@@ -790,6 +857,11 @@ class handler(BaseHTTPRequestHandler):
                     for c in cand:
                         if isinstance(c, dict) and c.get("id") and not any(str(x.get("id")) == str(c.get("id")) for x in all_srvs):
                             all_srvs.append(c)
+                if all_srvs:
+                    try:
+                        r_cmd("SET", "ticketmint:servers", json.dumps(all_srvs), "EX", "120")
+                    except Exception:
+                        pass
             admin_srvs = [
                 s for s in all_srvs
                 if isinstance(s, dict) and (
@@ -910,6 +982,19 @@ class handler(BaseHTTPRequestHandler):
                 for r in non_everyone_roles
             ) or "<span style='color:#9ca3af;font-size:12px'>No roles synced yet.</span>"
 
+            def role_ping_opts(selected_val):
+                sel_s = str(selected_val or "").strip()
+                out = [f"<option value='' {'selected' if sel_s == '' else ''}>No Role Ping</option>"]
+                out.append(f"<option value='@everyone' {'selected' if sel_s.lower() in ('everyone', '@everyone') else ''}>@everyone</option>")
+                for r in non_everyone_roles:
+                    if not isinstance(r, dict) or not r.get("id"):
+                        continue
+                    rid = str(r["id"])
+                    rname = str(r.get("name") or rid)
+                    is_sel = sel_s in (rid, f"<@&{rid}>", f"@{rname}", rname)
+                    out.append(f"<option value='{esc(rid)}' {'selected' if is_sel else ''}>@{esc(rname)}</option>")
+                return "".join(out)
+
             cho = ch_opts(txt_chs, sc["dash"], "-- Select Ticket Panel Channel --", "#")
             cao = ch_opts(cat_chs, sc["cat"], "None (Optional)", "")
             lgo = ch_opts(txt_chs, sc["logs"], "None (Optional)", "#")
@@ -970,19 +1055,24 @@ class handler(BaseHTTPRequestHandler):
                 f"<div style='font-weight:800;font-size:14px;margin-bottom:3px'>{esc(sc['w_title'] or 'Welcome!')}</div>"
                 f"<div style='color:#cbd5e1;font-size:13px'>{prev_txt}</div>{banner_prev}</div></div>"
                 f"<div class='field'><label>Goodbye Channel (Optional)</label><small>Channel where goodbye messages are posted when a member leaves.</small><select name='goodbye'>{g_cho}</select></div>"
-                f"<div class='field'><label>Goodbye Message</label><small>Supports <b>{{user}}</b>, <b>{{server}}</b>, and <b>{{member_count}}</b>.</small><input type='text' name='g_msg' value='{esc(sc['g_msg'])}' placeholder='{{user}} just left {{server}}. We now have {{member_count}} members.'></div>"
+                f"<div class='field'><label>Goodbye Message</label><small>Supports <b>{{user}}</b>, <b>{{server}}</b>, and <b>{{member_count}}</b>.</small><input type='text' name='g_msg' value='{esc(sc['g_msg'])}' placeholder='{{user}} just left {{server}}. We now have {member_count} members.'></div>"
                 f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'>"
                 f"<button type='submit' name='act' value='save' class='btn btn-orange'>Save Welcome &amp; Goodbye</button>"
                 f"<button type='submit' name='act' value='test_welcome' class='btn btn-dark'>Send Test Welcome Card</button></div></form></div>"
             )
 
             ann_cho = ch_opts(txt_chs, sc["dash"], "-- Select Target Channel --", "#")
+            ann_role_opts = role_ping_opts(sc["announce_ping"])
             announce_pane = (
                 f"<div class='tab-pane {'act' if tab=='announce' else ''}' data-pane='announce'>"
                 f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
                 f"<div class='field'><label>Target Channel</label><small>Choose where TicketMint should post this announcement.</small><select name='ann_channel' required>{ann_cho}</select></div>"
                 f"<div class='field row2'><div><label>Announcement Title</label><small>Displayed as a bold heading.</small><input type='text' name='ann_title' value='{esc(sc['announce_default_title'])}' placeholder='Server Update!' required></div>"
-                f"<div><label>Custom Ping Target (Optional)</label><small>E.g. @members, @RoleName, or leave blank ({esc(sc['announce_ping'] or 'none')}).</small><input type='text' name='ann_custom_ping' value='{esc(sc['announce_ping'])}' placeholder='@members'></div></div>"
+                f"<div><label>Select Role to Ping</label><small>Pick a role or @everyone to ping with this announcement.</small>"
+                f"<div style='display:flex;gap:8px;align-items:center'><select id='annRoleSelect' name='ann_role_select' style='flex:1'>{ann_role_opts}</select>"
+                f"<button type='button' class='btn btn-dark' onclick=\"tmCycleRoleSelect('annRoleSelect','annRoleStatus')\">Select Role to Ping</button></div>"
+                f"<div id='annRoleStatus' style='color:#9ca3af;font-size:11px;margin-top:5px'>Or type custom ping below ({esc(sc['announce_ping'] or 'none')}).</div>"
+                f"<input type='text' name='ann_custom_ping' value='{esc(sc['announce_ping'])}' placeholder='@RoleName or role ID (optional override)' style='margin-top:6px'></div></div>"
                 f"<div class='field'><label>Announcement Message</label><small>Write your announcement details below.</small><textarea name='ann_body' placeholder='Hey everyone! Here is what is new...' required></textarea></div>"
                 f"<div class='field'><label class='chk-line'><input type='checkbox' name='ann_everyone' value='1'><span>Override with @everyone above the announcement</span></label></div>"
                 f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='announce' class='btn btn-orange'>Send Announcement</button></div></form></div>"
@@ -1056,11 +1146,16 @@ class handler(BaseHTTPRequestHandler):
                 for key, label, _, _ in ALL_COMMANDS
             )
             run_ch_opts = ch_opts(txt_chs, sc["dash"], "-- Select Channel --", "#")
+            cmd_role_opts = role_ping_opts(sc["announce_ping"])
             commands_pane = (
                 f"<div class='tab-pane {'act' if tab=='commands' else ''}' data-pane='commands'>"
                 f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
-                f"<div class='field'><label>Custom Command Design (/announce)</label><small>Set default ping (like <b>@members</b>), title, accent color, and footer.</small>"
-                f"<div class='row2'><div><label>Custom Ping Target</label><input type='text' name='announce_ping' value='{esc(sc['announce_ping'])}' placeholder='@members'></div>"
+                f"<div class='field'><label>Custom Command Design (/announce)</label><small>Select role to ping (or @everyone), title, accent color, and footer.</small>"
+                f"<div class='row2'><div><label>Default Role to Ping</label>"
+                f"<div style='display:flex;gap:8px;align-items:center'><select id='cmdRoleSelect' name='announce_role_select' style='flex:1'>{cmd_role_opts}</select>"
+                f"<button type='button' class='btn btn-dark' onclick=\"tmCycleRoleSelect('cmdRoleSelect','cmdRoleStatus')\">Select Role to Ping</button></div>"
+                f"<div id='cmdRoleStatus' style='color:#9ca3af;font-size:11px;margin-top:4px'>Current: {esc(sc['announce_ping'] or 'None')}</div>"
+                f"<input type='text' name='announce_ping' value='{esc(sc['announce_ping'])}' placeholder='@RoleName or role ID' style='margin-top:6px'></div>"
                 f"<div><label>Accent Color (Hex)</label><input type='text' name='announce_color' value='{esc(sc['announce_color'])}' placeholder='#ff7a00'></div></div>"
                 f"<div class='row2' style='margin-top:10px'><div><label>Default Title</label><input type='text' name='announce_default_title' value='{esc(sc['announce_default_title'])}' placeholder='Announcement'></div>"
                 f"<div><label>Custom Footer</label><input type='text' name='announce_footer' value='{esc(sc['announce_footer'])}' placeholder='TicketMint'></div></div></div>"
@@ -1244,7 +1339,9 @@ class handler(BaseHTTPRequestHandler):
                 ann_title = data.get("ann_title", [cur["announce_default_title"]])[0].strip() or cur["announce_default_title"] or "Announcement"
                 ann_body = data.get("ann_body", [""])[0].strip()
                 custom_ping = data.get("ann_custom_ping", [""])[0].strip()
-                ping = "@everyone" if data.get("ann_everyone") else (custom_ping or cur["announce_ping"])
+                role_sel_ping = data.get("ann_role_select", [""])[0].strip()
+                chosen_ping = custom_ping or role_sel_ping or cur["announce_ping"]
+                ping = "@everyone" if data.get("ann_everyone") else chosen_ping
                 if not ann_cid or not ann_body:
                     return self.redir(
                         f"/dashboard?server={urllib.parse.quote(sid)}&tab=announce&err={urllib.parse.quote('Choose a channel and enter a message.')}"
@@ -1374,7 +1471,9 @@ class handler(BaseHTTPRequestHandler):
 
                 enabled = set(data.get("enabled_cmds", []))
                 cur["disabled_cmds"] = [k for k, _, _, _ in ALL_COMMANDS if k not in enabled]
-                cur["announce_ping"] = data.get("announce_ping", [""])[0].strip()
+                typed_ping = data.get("announce_ping", [""])[0].strip()
+                picked_ping = data.get("announce_role_select", [""])[0].strip()
+                cur["announce_ping"] = typed_ping or picked_ping
                 w_col = data.get("announce_color", ["#ff7a00"])[0].strip()
                 cur["announce_color"] = w_col if re.match(r"^#[0-9a-fA-F]{6}$", w_col) else "#ff7a00"
                 cur["announce_default_title"] = data.get("announce_default_title", ["Announcement"])[0].strip() or "Announcement"
