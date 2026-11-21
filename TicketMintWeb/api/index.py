@@ -870,7 +870,7 @@ class handler(BaseHTTPRequestHandler):
 
             vr_cho = ch_opts(non_everyone_roles, sc["verify_role"], "Disabled (No Verified Role)", "@")
             vc_cho = ch_opts(txt_chs, sc["verify_channel"], "-- Select Verification Channel --", "#")
-            verify_pane = (
+            verification_pane = (
                 f"<div class='tab-pane {'act' if tab=='verification' else ''}' data-pane='verification'>"
                 f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
                 f"<div class='field row2'><div><label>Verified Role</label><small>Role given when a member clicks Verify.</small><select name='verify_role'>{vr_cho}</select></div>"
