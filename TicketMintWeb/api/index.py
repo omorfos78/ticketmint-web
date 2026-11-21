@@ -1,4 +1,4 @@
-import base64, gzip, html, json, os, random, re, secrets, time, urllib.error, urllib.parse, urllib.request
+import base64, html, json, os, random, re, secrets, time, urllib.error, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler
 
 BOT_TOKEN = os.getenv("YAPPER_BOT_TOKEN", "yb_23404489.PlvFt0GgzYy6Z-SGp8ZHfSvOh0io7LhVL7KggSTY")
@@ -668,18 +668,13 @@ class handler(BaseHTTPRequestHandler):
 
     def send_html(self, html_body, cookie=None):
         raw_bytes = html_body.encode("utf-8")
-        ae = self.headers.get("Accept-Encoding", "")
-        use_gz = "gzip" in ae and len(raw_bytes) > 1024
-        out = gzip.compress(raw_bytes, compresslevel=5) if use_gz else raw_bytes
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        if use_gz:
-            self.send_header("Content-Encoding", "gzip")
-        self.send_header("Content-Length", str(len(out)))
+        self.send_header("Content-Length", str(len(raw_bytes)))
         if cookie:
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
-        self.wfile.write(out)
+        self.wfile.write(raw_bytes)
 
     def redir(self, loc, cookie=None):
         self.send_response(302)
