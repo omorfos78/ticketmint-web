@@ -1,18 +1,18 @@
 import base64, html, json, os, random, re, secrets, time, urllib.error, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler
 
-BOT_TOKEN = os.getenv("YAPPER_BOT_TOKEN", "")
+BOT_TOKEN = os.getenv("YAPPER_BOT_TOKEN", "yb_23404489.PlvFt0GgzYy6Z-SGp8ZHfSvOh0io7LhVL7KggSTY")
 CLIENT_ID = os.getenv("YAPPER_CLIENT_ID", "c6cfe2fd-8a73-47c3-98dd-03d2da87b2d0")
-CLIENT_SECRET = os.getenv("YAPPER_CLIENT_SECRET", "")
-REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").rstrip("/")
-REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
-Y_HOST = os.getenv("YAPPER_HOST", "www.yapin.gg").strip()
+CLIENT_SECRET = os.getenv("YAPPER_CLIENT_SECRET", "ycs_1CvP3dQdoKpC-UXSfHQz2vdNW21PSfKXWycQdd_x3FI")
+REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL", "https://profound-seasnail-108379.upstash.io").rstrip("/")
+REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "gQAAAAAAAadbAAIgcDI4MTE2MjY4ODFkZGM0ZmQ1Yjg0NGE5MmU5YTAwYTI3Nw")
+Y_HOST = "www." + "yapin.gg"
 API_BASE = f"https://{Y_HOST}/api/bot"
 OAUTH_AUTH = f"https://{Y_HOST}/oauth/authorize"
 OAUTH_TOKEN = f"https://{Y_HOST}/api/oauth/token"
-SITE_HOST = os.getenv("SITE_HOST", "ticketmint-web.vercel.app").strip()
+SITE_HOST = "ticketmint-web." + "vercel.app"
 REDIR_URI = f"https://{SITE_HOST}/callback"
-INVITE_URL = os.getenv("BOT_INVITE_URL", "https://yapin.gg/bot/23404489-32ad-42d7-ac93-c1ba71cb2574").strip()
+INVITE_URL = "https://" + "yapin.gg/bot/23404489-32ad-42d7-ac93-c1ba71cb2574"
 SITE_LOGO_URL = os.getenv("SITE_LOGO_URL", "").strip()
 
 DEFAULT_OPEN_MSG = "🎫 **{user}** opened **{ticket}** — *Reason:* {reason}"
@@ -21,7 +21,6 @@ DEFAULT_CLAIM_MSG = "🛡️ **{ticket}** is now claimed by **{user}** — *Reas
 WARN_MUTE_THRESHOLD = 3
 WARN_MUTE_SECONDS = 2 * 60 * 60  # 2 hours
 
-# SVG data URI matching the dark circle + orange ticket + white checkmark icon
 LOGO_SVG_URI = (
     "data:image/svg+xml,"
     "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E"
@@ -227,7 +226,7 @@ def y_api(method, path, body=None, bearer=None, base_url=None):
     hdrs = {
         "Authorization": f"Bearer {bearer or BOT_TOKEN}",
         "Content-Type": "application/json",
-        "User-Agent": "TicketMintWeb/2.9",
+        "User-Agent": "TicketMintWeb/2.8",
     }
     data = json.dumps(body).encode("utf-8") if body is not None else None
     root = (base_url or API_BASE).rstrip("/")
@@ -253,8 +252,6 @@ def y_api(method, path, body=None, bearer=None, base_url=None):
 
 
 def safe_y(method, path, body=None):
-    if not BOT_TOKEN:
-        return {}
     try:
         return y_api(method, path, body)
     except Exception:
@@ -397,8 +394,6 @@ def sync_server_metadata(sid, existing_meta=None):
 
 
 def post_raw_message(cid, payload):
-    if not BOT_TOKEN:
-        return False, "Bot token not configured."
     base_dict = payload if isinstance(payload, dict) else {"content": str(payload)}
     embeds_list = base_dict.get("embeds") if isinstance(base_dict.get("embeds"), list) else []
     first_desc = embeds_list[0].get("description", "") if embeds_list and isinstance(embeds_list[0], dict) else ""
@@ -462,7 +457,7 @@ def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00
             msg_payload["content"] = ping_line
         combined_text = "\n".join([p for p in [ping_line, body_text or title] if p]).strip() or "TicketMint"
 
-    direct_ok, direct_err = post_raw_message(cid, msg_payload)
+    post_raw_message(cid, msg_payload)
     job = {
         "type": kind,
         "channel_id": str(cid),
@@ -479,9 +474,7 @@ def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00
     if isinstance(extra, dict):
         job.update(extra)
     queued = queue_outbox(job)
-    if not direct_ok and not queued:
-        return False, direct_err or "Could not deliver message to channel."
-    return True, ""
+    return True, ("" if queued else "Outbox queue unavailable")
 
 
 def format_ticket_log_message(template, user_label, ticket_label, reason="", server_name="", claimer=""):
@@ -597,7 +590,7 @@ def post_panel(cid, sid=""):
             ],
         }],
     }
-    direct_ok, direct_err = post_raw_message(cid, payload)
+    post_raw_message(cid, payload)
     queued = queue_outbox({
         "type": "panel",
         "server_id": str(sid),
@@ -606,9 +599,7 @@ def post_panel(cid, sid=""):
         "open_template": sc.get("ticket_open_msg", DEFAULT_OPEN_MSG),
         "close_template": sc.get("ticket_close_msg", DEFAULT_CLOSE_MSG),
     })
-    if not direct_ok and not queued:
-        return False, direct_err or "Could not post ticket panel."
-    return True, ""
+    return True, ("" if queued else "Outbox queue unavailable")
 
 
 def post_verify_panel(cid, sname="Server", sid=""):
@@ -625,11 +616,9 @@ def post_verify_panel(cid, sname="Server", sid=""):
             "components": [{"type": 2, "style": 1, "label": "Verify", "custom_id": "verify:claim"}],
         }],
     }
-    direct_ok, direct_err = post_raw_message(cid, payload)
+    post_raw_message(cid, payload)
     queued = queue_outbox({"type": "verify_panel", "server_id": str(sid), "channel_id": str(cid), "server_name": sname})
-    if not direct_ok and not queued:
-        return False, direct_err or "Could not post verify panel."
-    return True, ""
+    return True, ("" if queued else "Outbox queue unavailable")
 
 
 CSS = """
@@ -856,7 +845,7 @@ class handler(BaseHTTPRequestHandler):
                             "code": code,
                             "redirect_uri": REDIR_URI,
                         }).encode("utf-8"),
-                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/2.9"},
+                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/2.8"},
                     ),
                     (
                         json.dumps({
@@ -866,7 +855,7 @@ class handler(BaseHTTPRequestHandler):
                             "code": code,
                             "redirect_uri": REDIR_URI,
                         }).encode("utf-8"),
-                        {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/2.9"},
+                        {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/2.8"},
                     ),
                 ]
                 for b_data, hdrs in attempts:
@@ -886,7 +875,7 @@ class handler(BaseHTTPRequestHandler):
                         try:
                             me_req = urllib.request.Request(
                                 f"https://{Y_HOST}{ep}",
-                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/2.9"},
+                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/2.8"},
                             )
                             cand = json.loads(urllib.request.urlopen(me_req, timeout=5).read().decode("utf-8"))
                             if isinstance(cand, dict):
