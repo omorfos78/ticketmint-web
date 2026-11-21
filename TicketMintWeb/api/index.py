@@ -12,30 +12,30 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler
 
-BOT_TOKEN = os.getenv("YAPPER_BOT_TOKEN", "yb_23404489.PlvFt0GgzYy6Z-SGp8ZHfSvOh0io7LhVL7KggSTY")[cite: 5]
+BOT_TOKEN = os.getenv("YAPPER_BOT_TOKEN", "yb_23404489.PlvFt0GgzYy6Z-SGp8ZHfSvOh0io7LhVL7KggSTY")
 CLIENT_ID = (
     os.getenv("YAPPER_CLIENT_ID")
     or os.getenv("CLIENT_ID")
     or "c6cfe2fd-8a73-47c3-98dd-03d2da87b2d0"
-)[cite: 5]
+).strip()
 CLIENT_SECRET = (
     os.getenv("YAPPER_CLIENT_SECRET")
     or os.getenv("CLIENT_SECRET")
     or "PUT_YOUR_CURRENT_YAPIN_CLIENT_SECRET_HERE"
-)
-REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL", "https://profound-seasnail-108379.upstash.io").rstrip("/")[cite: 5]
-REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "gQAAAAAAAadbAAIgcDI4MTE2MjY4ODFkZGM0ZmQ1Yjg0NGE5MmU5YTAwYTI3Nw")[cite: 5]
-Y_HOST = "www." + "yapin.gg"[cite: 5]
-API_BASE = f"https://{Y_HOST}/api/bot"[cite: 5]
-OAUTH_AUTH = f"https://{Y_HOST}/oauth/authorize"[cite: 5]
-OAUTH_TOKEN = f"https://{Y_HOST}/api/oauth/token"[cite: 5]
-SITE_HOST = os.getenv("SITE_HOST", "ticketmint-web." + "vercel.app")[cite: 5]
-REDIR_URI = f"https://{SITE_HOST}/callback"[cite: 5]
-INVITE_URL = "https://" + "yapin.gg/bot/23404489-32ad-42d7-ac93-c1ba71cb2574"[cite: 5]
+).strip()
+REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL", "https://profound-seasnail-108379.upstash.io").rstrip("/")
+REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "gQAAAAAAAadbAAIgcDI4MTE2MjY4ODFkZGM0ZmQ1Yjg0NGE5MmU5YTAwYTI3Nw")
+Y_HOST = "www." + "yapin.gg"
+API_BASE = f"https://{Y_HOST}/api/bot"
+OAUTH_AUTH = f"https://{Y_HOST}/oauth/authorize"
+OAUTH_TOKEN = f"https://{Y_HOST}/api/oauth/token"
+SITE_HOST = os.getenv("SITE_HOST", "ticketmint-web." + "vercel.app")
+REDIR_URI = f"https://{SITE_HOST}/callback"
+INVITE_URL = "https://" + "yapin.gg/bot/23404489-32ad-42d7-ac93-c1ba71cb2574"
 
-DEFAULT_OPEN_MSG = "🎫 **{user}** opened **{ticket}** — *Reason:* {reason}"[cite: 5]
-DEFAULT_CLOSE_MSG = "🔒 **{ticket}** was closed by **{user}** — *Reason:* {reason}"[cite: 5]
-DEFAULT_CLAIM_MSG = "🛡️ **{ticket}** is now claimed by **{user}** — *Reason:* {reason}"[cite: 5]
+DEFAULT_OPEN_MSG = "🎫 **{user}** opened **{ticket}** — *Reason:* {reason}"
+DEFAULT_CLOSE_MSG = "🔒 **{ticket}** was closed by **{user}** — *Reason:* {reason}"
+DEFAULT_CLAIM_MSG = "🛡️ **{ticket}** is now claimed by **{user}** — *Reason:* {reason}"
 
 # (key, display_label, description, mod_only)
 ALL_COMMANDS = [
@@ -59,7 +59,7 @@ ALL_COMMANDS = [
     ("serverinfo", "/serverinfo", "View server details and protection stats", False),
     ("userinfo", "/userinfo", "View a member's ID, roles, and staff status", False),
     ("poll", "/poll", "Create a quick poll with choices", False),
-][cite: 5]
+]
 
 
 def ordinal_num(n):
@@ -71,17 +71,17 @@ def ordinal_num(n):
         suf = "th"
     else:
         suf = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
-    return f"{n}{suf}"[cite: 5]
+    return f"{n}{suf}"
 
 
 def esc(val):
-    return html.escape(str(val or ""), quote=True)[cite: 5]
+    return html.escape(str(val or ""), quote=True)
 
 
 def clean_err(raw_text):
     txt = re.sub(r"<[^>]+>", " ", str(raw_text or ""))
     txt = re.sub(r"\s+", " ", txt).strip()
-    return txt[:140] if txt else "Request failed"[cite: 5]
+    return txt[:140] if txt else "Request failed"
 
 
 def format_ping_mention(raw_ping):
@@ -118,7 +118,7 @@ def r_cmd(*args):
             if attempt == 0:
                 time.sleep(0.1)
             else:
-                return None[cite: 5]
+                return None
 
 
 def load_all_cfg():
@@ -127,7 +127,7 @@ def load_all_cfg():
         parsed = json.loads(raw) if raw else {}
         return parsed if isinstance(parsed, dict) else {}
     except Exception:
-        return {}[cite: 5]
+        return {}
 
 
 def save_all_cfg(d, sid=None):
@@ -138,7 +138,7 @@ def save_all_cfg(d, sid=None):
         if sid and str(sid) in d:
             r_cmd("SET", f"ticketmint:cfg:{sid}", json.dumps(d[str(sid)]))
     except Exception:
-        pass[cite: 5]
+        pass
 
 
 def queue_outbox(job):
@@ -148,14 +148,14 @@ def queue_outbox(job):
         r_cmd("RPUSH", "ticketmint:outbox", json.dumps(payload))
         return True
     except Exception:
-        return False[cite: 5]
+        return False
 
 
 def y_api(method, path, body=None, bearer=None, base_url=None):
     hdrs = {
         "Authorization": f"Bearer {bearer or BOT_TOKEN}",
         "Content-Type": "application/json",
-        "User-Agent": "TicketMintWeb/2.7",
+        "User-Agent": "Mozilla/5.0",
     }
     data = json.dumps(body).encode("utf-8") if body is not None else None
     root = (base_url or API_BASE).rstrip("/")
@@ -177,14 +177,14 @@ def y_api(method, path, body=None, bearer=None, base_url=None):
             if attempt == 0:
                 time.sleep(0.15)
                 continue
-            raise last_exc[cite: 5]
+            raise last_exc
 
 
 def safe_y(method, path, body=None):
     try:
         return y_api(method, path, body)
     except Exception:
-        return {}[cite: 5]
+        return {}
 
 
 def pick_name(obj, fallback=""):
@@ -194,19 +194,19 @@ def pick_name(obj, fallback=""):
         v = obj.get(k)
         if isinstance(v, str) and v.strip():
             return v.strip()
-    return fallback[cite: 5]
+    return fallback
 
 
 def is_cat_item(c):
     k = str(c.get("kind", "")).lower()
     t = str(c.get("type", "")).lower()
-    return k in ("category", "folder", "group") or t in ("category", "folder", "group", "4") or bool(c.get("is_category"))[cite: 5]
+    return k in ("category", "folder", "group") or t in ("category", "folder", "group", "4") or bool(c.get("is_category"))
 
 
 def is_voice_item(c):
     k = str(c.get("kind", "")).lower()
     t = str(c.get("type", "")).lower()
-    return k in ("voice", "stage") or t in ("voice", "stage", "2", "13")[cite: 5]
+    return k in ("voice", "stage") or t in ("voice", "stage", "2", "13")
 
 
 def resolve_server_name(sid, fetched=None, base_srv=None, meta=None):
@@ -250,7 +250,7 @@ def resolve_server_name(sid, fetched=None, base_srv=None, meta=None):
         n = pick_name(inner)
         if n:
             return n
-    return f"Server ({sid})"[cite: 5]
+    return f"Server ({sid})"
 
 
 def sync_server_metadata(sid, existing_meta=None):
@@ -319,7 +319,7 @@ def sync_server_metadata(sid, existing_meta=None):
     }
     if roles or chs or cat_chs or srv_name:
         r_cmd("SET", f"ticketmint:meta:{sid}", json.dumps(new_meta))
-    return new_meta, fetched if isinstance(fetched, dict) else {}[cite: 5]
+    return new_meta, fetched if isinstance(fetched, dict) else {}
 
 
 def post_raw_message(cid, payload):
@@ -347,7 +347,7 @@ def post_raw_message(cid, payload):
                 last_err = f"HTTP {he.code}: {clean_err(err_body)}"
             except Exception as e:
                 last_err = clean_err(e)
-    return False, last_err or "Could not deliver message to channel."[cite: 5]
+    return False, last_err or "Could not deliver message to channel."
 
 
 def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00", image_url="", footer="", kind="message", ping="", extra=None):
@@ -409,11 +409,11 @@ def format_ticket_log_message(template, user_label, ticket_label, reason="", ser
         .replace("{reason}", clean_reason)
         .replace("{server}", server_name or "Server")
         .replace("{claimer}", claimer or user_label or "Staff")
-    )[cite: 5]
+    )
 
 
 def u_list(d, k):
-    return d if isinstance(d, list) else (d.get(k, []) if isinstance(d, dict) else [])[cite: 5]
+    return d if isinstance(d, list) else (d.get(k, []) if isinstance(d, dict) else [])
 
 
 def u_dict(d, k):
@@ -474,7 +474,7 @@ def get_scfg(sid):
         "ticket_open_msg": str(raw.get("ticket_open_msg", DEFAULT_OPEN_MSG) or DEFAULT_OPEN_MSG),
         "ticket_close_msg": str(raw.get("ticket_close_msg", DEFAULT_CLOSE_MSG) or DEFAULT_CLOSE_MSG),
         "ticket_claim_msg": str(raw.get("ticket_claim_msg", DEFAULT_CLAIM_MSG) or DEFAULT_CLAIM_MSG),
-    }[cite: 5]
+    }
 
 
 def is_admin(sid, uid):
@@ -513,7 +513,7 @@ def post_panel(cid, sid=""):
     }
     post_raw_message(cid, payload)
     queued = queue_outbox({"type": "panel", "server_id": str(sid), "channel_id": str(cid)})
-    return True, ("" if queued else "Outbox queue unavailable")[cite: 5]
+    return True, ("" if queued else "Outbox queue unavailable")
 
 
 def post_verify_panel(cid, sname="Server", sid=""):
@@ -532,7 +532,7 @@ def post_verify_panel(cid, sname="Server", sid=""):
     }
     post_raw_message(cid, payload)
     queued = queue_outbox({"type": "verify_panel", "server_id": str(sid), "channel_id": str(cid), "server_name": sname})
-    return True, ("" if queued else "Outbox queue unavailable")[cite: 5]
+    return True, ("" if queued else "Outbox queue unavailable")
 
 
 CSS = """
@@ -609,7 +609,7 @@ textarea{min-height:96px;resize:vertical}
 .perm-mem{background:#22c55e22;color:#4ade80;border:1px solid #22c55e66}
 .tm-toast{transition:opacity .35s ease,transform .35s ease}
 .tm-toast.hide{opacity:0;transform:translateY(-4px);pointer-events:none}
-"""[cite: 5]
+"""
 
 INSTANT_JS = """
 <script>
@@ -660,7 +660,7 @@ window.addEventListener('DOMContentLoaded',function(){
   }
 });
 </script>
-"""[cite: 5]
+"""
 
 
 def page(title, body, user=None):
@@ -675,7 +675,7 @@ def page(title, body, user=None):
         f"<title>{esc(title)}</title><style>{CSS}</style></head><body>"
         f"<div class='nav'><a href='/' class='brand'><span class='badge'>TM</span> TicketMint</a><div class='nav-links'>{right}</div></div>"
         f"{body}{INSTANT_JS}</body></html>"
-    )[cite: 5]
+    )
 
 
 def decode_jwt(tok):
@@ -688,7 +688,7 @@ def decode_jwt(tok):
         obj = json.loads(base64.urlsafe_b64decode(p.encode("utf-8")).decode("utf-8"))
         return obj if isinstance(obj, dict) and (obj.get("id") or obj.get("sub") or obj.get("user_id")) else None
     except Exception:
-        return None[cite: 5]
+        return None
 
 
 class handler(BaseHTTPRequestHandler):
@@ -702,7 +702,7 @@ class handler(BaseHTTPRequestHandler):
             parsed = json.loads(raw) if raw else None
             return parsed if isinstance(parsed, dict) and parsed.get("id") else None
         except Exception:
-            return None[cite: 5]
+            return None
 
     def send_html(self, html_body, cookie=None):
         raw_bytes = html_body.encode("utf-8")
@@ -717,14 +717,14 @@ class handler(BaseHTTPRequestHandler):
         if cookie:
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
-        self.wfile.write(out)[cite: 5]
+        self.wfile.write(out)
 
     def redir(self, loc, cookie=None):
         self.send_response(302)
         self.send_header("Location", loc)
         if cookie:
             self.send_header("Set-Cookie", cookie)
-        self.end_headers()[cite: 5]
+        self.end_headers()
 
     def do_GET(self):
         try:
@@ -732,7 +732,7 @@ class handler(BaseHTTPRequestHandler):
         except Exception as e:
             self.send_html(
                 page("Dashboard Error", f"<div class='wrap'><div class='panel'><h2 style='color:#ff7a00'>Something went wrong</h2><p style='color:#9ca3af;margin-top:8px'>{esc(clean_err(e))}</p><div style='margin-top:14px'><a href='/dashboard' class='btn btn-orange'>Back to Servers</a></div></div></div>")
-            )[cite: 5]
+            )
 
     def _handle_get(self):
         u = urllib.parse.urlsplit(self.path)
@@ -740,23 +740,23 @@ class handler(BaseHTTPRequestHandler):
         sess = self.get_sess()
 
         if path == "/logout":
-            return self.redir("/", "tm_sess=; Path=/; Max-Age=0")[cite: 5]
+            return self.redir("/", "tm_sess=; Path=/; Max-Age=0")
 
         if path == "/login":
             if sess:
-                return self.redir("/dashboard")[cite: 5]
+                return self.redir("/dashboard")
             st = secrets.token_urlsafe(12)
             url = (
                 f"{OAUTH_AUTH}?client_id={urllib.parse.quote(CLIENT_ID)}"
                 f"&redirect_uri={urllib.parse.quote(REDIR_URI)}"
                 f"&response_type=code&scope=identify&state={st}"
-            )[cite: 5]
-            return self.redir(url)[cite: 5]
+            )
+            return self.redir(url)
 
         if path == "/callback":
             code = qs.get("code", [""])[0]
             if not code:
-                return self.redir("/")[cite: 5]
+                return self.redir("/")
             try:
                 tok_data = None
                 last_err = ""
@@ -769,7 +769,7 @@ class handler(BaseHTTPRequestHandler):
                             "code": code,
                             "redirect_uri": REDIR_URI,
                         }).encode("utf-8"),
-                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/2.7"},
+                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "Mozilla/5.0"},
                     ),
                     (
                         json.dumps({
@@ -779,9 +779,9 @@ class handler(BaseHTTPRequestHandler):
                             "code": code,
                             "redirect_uri": REDIR_URI,
                         }).encode("utf-8"),
-                        {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/2.7"},
+                        {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
                     ),
-                ][cite: 5]
+                ]
                 for b_data, hdrs in attempts:
                     try:
                         req = urllib.request.Request(OAUTH_TOKEN, data=b_data, headers=hdrs, method="POST")
@@ -789,9 +789,9 @@ class handler(BaseHTTPRequestHandler):
                         if tok_data.get("access_token"):
                             break
                     except urllib.error.HTTPError as he:
-                        last_err = f"{he.code}: {he.read().decode(errors='ignore')}"[cite: 5]
+                        last_err = f"{he.code}: {he.read().decode(errors='ignore')}"
                 if not tok_data or not tok_data.get("access_token"):
-                    raise RuntimeError(last_err or "No access_token returned")[cite: 5]
+                    raise RuntimeError(last_err or "No access_token returned")
                 access = tok_data.get("access_token", "")
                 me_raw = tok_data.get("user") if isinstance(tok_data.get("user"), dict) else decode_jwt(tok_data.get("id_token", "") or access)
                 if not me_raw:
@@ -799,7 +799,7 @@ class handler(BaseHTTPRequestHandler):
                         try:
                             me_req = urllib.request.Request(
                                 f"https://{Y_HOST}{ep}",
-                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/2.7"},
+                                headers={"Authorization": f"Bearer {access}", "User-Agent": "Mozilla/5.0"},
                             )
                             cand = json.loads(urllib.request.urlopen(me_req, timeout=5).read().decode("utf-8"))
                             if isinstance(cand, dict):
@@ -808,22 +808,22 @@ class handler(BaseHTTPRequestHandler):
                                     me_raw = inner
                                     break
                         except Exception:
-                            pass[cite: 5]
+                            pass
                 if not me_raw:
-                    raise RuntimeError("Could not fetch Yapin user profile")[cite: 5]
+                    raise RuntimeError("Could not fetch Yapin user profile")
                 uid = me_raw.get("id") or me_raw.get("user_id") or me_raw.get("sub")
                 uname = me_raw.get("username") or me_raw.get("preferred_username") or me_raw.get("name") or me_raw.get("display_name") or "user"
                 sid_tok = secrets.token_urlsafe(24)
                 r_cmd("SET", f"tm:sess:{sid_tok}", json.dumps({"id": uid, "username": uname}), "EX", "604800")
-                return self.redir("/dashboard", f"tm_sess={sid_tok}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800")[cite: 5]
+                return self.redir("/dashboard", f"tm_sess={sid_tok}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800")
             except Exception as e:
                 return self.send_html(
                     page("Login Error", f"<div class='wrap'><div class='panel'><h2 style='color:#ff7a00'>OAuth Callback Error</h2><p style='color:#9ca3af;margin-top:8px'>{esc(e)}</p></div></div>")
-                )[cite: 5]
+                )
 
         if path.startswith("/dashboard"):
             if not sess:
-                return self.redir("/login")[cite: 5]
+                return self.redir("/login")
             all_srvs = []
             try:
                 cached = r_cmd("GET", "ticketmint:servers")
@@ -848,7 +848,7 @@ class handler(BaseHTTPRequestHandler):
                     or s.get("owner") is True
                     or is_admin(s.get("id"), sess["id"])
                 )
-            ][cite: 5]
+            ]
             sel_id = qs.get("server", [""])[0].strip()
             if not sel_id:
                 rows = []
@@ -874,7 +874,7 @@ class handler(BaseHTTPRequestHandler):
                 footer_inv = f"<div style='text-align:center;margin-top:18px'><a href='{INVITE_URL}' class='btn btn-dark'>+ Invite TicketMint to Another Server</a></div>" if cards else ""
                 return self.send_html(
                     page("Select Server - TicketMint", f"<div class='wrap' style='max-width:740px'><div style='text-align:center;margin:16px 0 26px'><h1 style='font-size:30px;margin-bottom:4px'>Hey, {esc(sess['username'])}</h1><p style='color:#9ca3af'>Pick a server to configure.</p></div>{cards if cards else empty}{footer_inv}</div>", sess)
-                )[cite: 5]
+                )
 
             srv_obj = next((s for s in admin_srvs if str(s.get("id")) == str(sel_id)), None)
             meta = {}
@@ -912,7 +912,7 @@ class handler(BaseHTTPRequestHandler):
 
             txt_chs = [c for c in chs if isinstance(c, dict) and not is_cat_item(c) and not is_voice_item(c)]
             if not txt_chs:
-                txt_chs = [c for c in chs if isinstance(c, dict) and not is_cat_item(c)][cite: 5]
+                txt_chs = [c for c in chs if isinstance(c, dict) and not is_cat_item(c)]
 
             def ch_opts(items, selected_id, empty_label, prefix="#"):
                 out = [f"<option value=''>{esc(empty_label)}</option>"]
@@ -922,7 +922,7 @@ class handler(BaseHTTPRequestHandler):
                     cid = str(c.get("id", ""))
                     cname = c.get("name", "channel")
                     out.append(f"<option value='{esc(cid)}' {'selected' if cid == str(selected_id) else ''}>{esc(prefix)}{esc(cname)}</option>")
-                return "".join(out)[cite: 5]
+                return "".join(out)
 
             notice = ""
             if qs.get("synced"):
@@ -932,7 +932,7 @@ class handler(BaseHTTPRequestHandler):
             elif qs.get("sent"):
                 notice = "<div id='tm-notice' class='tm-toast' style='background:#16a34a22;border:1px solid #16a34a;color:#4ade80;padding:9px 13px;border-radius:8px;margin-bottom:14px;font-size:13px'>Announcement / action was sent!</div>"
             elif qs.get("err"):
-                notice = f"<div id='tm-notice' class='tm-toast' style='background:#dc262622;border:1px solid #dc2626;color:#f87171;padding:9px 13px;border-radius:8px;margin-bottom:14px;font-size:13px'>{esc(clean_err(qs.get('err', ['Error'])[0]))}</div>"[cite: 5]
+                notice = f"<div id='tm-notice' class='tm-toast' style='background:#dc262622;border:1px solid #dc2626;color:#f87171;padding:9px 13px;border-radius:8px;margin-bottom:14px;font-size:13px'>{esc(clean_err(qs.get('err', ['Error'])[0]))}</div>"
 
             active_cmds = len(ALL_COMMANDS) - len(set(sc["disabled_cmds"]))
             stats_bar = (
@@ -942,7 +942,7 @@ class handler(BaseHTTPRequestHandler):
                 f"<div class='stat-box'><div class='stat-num'>{len(cat_chs)}</div><div class='stat-lbl'>Categories</div></div>"
                 f"<div class='stat-box'><div class='stat-num'>{active_cmds}/{len(ALL_COMMANDS)}</div><div class='stat-lbl'>Commands</div></div>"
                 f"</div>"
-            )[cite: 5]
+            )
 
             non_everyone_roles = [r for r in roles if isinstance(r, dict) and r.get("name") != "@everyone"]
             pills = "".join(
@@ -958,7 +958,7 @@ class handler(BaseHTTPRequestHandler):
             protected_ping_pills = "".join(
                 f"<label class='pill'><input type='checkbox' name='protected_ping_roles' value='{esc(r['id'])}' {'checked' if str(r['id']) in set(str(x) for x in sc['protected_ping_roles']) else ''}><span>@{esc(r.get('name', 'Role'))}</span></label>"
                 for r in non_everyone_roles
-            ) or "<span style='color:#9ca3af;font-size:12px'>No roles synced yet.</span>"[cite: 5]
+            ) or "<span style='color:#9ca3af;font-size:12px'>No roles synced yet.</span>"
 
             def role_ping_opts(selected_val):
                 sel_s = str(selected_val or "").strip()
@@ -977,7 +977,7 @@ class handler(BaseHTTPRequestHandler):
             cao = ch_opts(cat_chs, sc["cat"], "None (Optional)", "")
             lgo = ch_opts(txt_chs, sc["logs"], "None (Optional)", "#")
             open_prev = esc(format_ticket_log_message(sc["ticket_open_msg"], f"@{sess['username']}", "#ticket-1898", "Need help with setup", srv_name, f"@{sess['username']}"))
-            close_prev = esc(format_ticket_log_message(sc["ticket_close_msg"], f"@{sess['username']}", "#ticket-1898", "Issue solved", srv_name, f"@{sess['username']}"))[cite: 5]
+            close_prev = esc(format_ticket_log_message(sc["ticket_close_msg"], f"@{sess['username']}", "#ticket-1898", "Issue solved", srv_name, f"@{sess['username']}"))
 
             tickets_pane = (
                 f"<div class='tab-pane {'act' if tab=='tickets' else ''}' data-pane='tickets'>{stats_bar}"
@@ -1005,7 +1005,7 @@ class handler(BaseHTTPRequestHandler):
                 f"<button type='submit' name='act' value='modping' class='btn btn-dark'>Send Staff Ping</button>"
                 f"<button type='submit' name='act' value='test_ticket_open' class='btn btn-dark'>Test Open Log</button>"
                 f"<button type='submit' name='act' value='test_ticket_close' class='btn btn-dark'>Test Close Log</button></div></form></div>"
-            )[cite: 5]
+            )
 
             w_cho = ch_opts(txt_chs, sc["welcome"], "Disabled (No Welcome Channel)", "#")
             g_cho = ch_opts(txt_chs, sc["goodbye"], "Disabled (No Goodbye Channel)", "#")
@@ -1033,11 +1033,11 @@ class handler(BaseHTTPRequestHandler):
                 f"<div style='font-weight:800;font-size:14px;margin-bottom:3px'>{esc(sc['w_title'] or 'Welcome!')}</div>"
                 f"<div style='color:#cbd5e1;font-size:13px'>{prev_txt}</div>{banner_prev}</div></div>"
                 f"<div class='field'><label>Goodbye Channel (Optional)</label><small>Channel where goodbye messages are posted when a member leaves.</small><select name='goodbye'>{g_cho}</select></div>"
-                f"<div class='field'><label>Goodbye Message</label><small>Supports <b>{{user}}</b>, <b>{{server}}</b>, and <b>{{member_count}}</b>.</small><input type='text' name='g_msg' value='{esc(sc['g_msg'])}' placeholder='{{user}} just left {{server}}. We now have {{member_count}} members.'></div>"
+                f"<div class='field'><label>Goodbye Message</label><small>Supports <b>{{user}}</b>, <b>{{server}}</b>, and <b>{{member_count}}</b>.</small><input type='text' name='g_msg' value='{esc(sc['g_msg'])}' placeholder='{{user}} just left {{server}}. We now have {member_count} members.'></div>"
                 f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'>"
                 f"<button type='submit' name='act' value='save' class='btn btn-orange'>Save Welcome &amp; Goodbye</button>"
                 f"<button type='submit' name='act' value='test_welcome' class='btn btn-dark'>Send Test Welcome Card</button></div></form></div>"
-            )[cite: 5]
+            )
 
             ann_cho = ch_opts(txt_chs, sc["dash"], "-- Select Target Channel --", "#")
             ann_role_opts = role_ping_opts(sc["announce_ping"])
@@ -1074,7 +1074,7 @@ class handler(BaseHTTPRequestHandler):
                 f"<div class='field row2'><div><label>Max Open Tickets Per User</label><small>Prevent users from opening too many rooms at once.</small><input type='number' name='max_tickets' min='1' max='10' value='{esc(sc['max_tickets'])}'></div>"
                 f"<div><label>Ticket Cooldown (Seconds)</label><small>Wait time between opening tickets (0 = off).</small><input type='number' name='ticket_cooldown' min='0' max='3600' value='{esc(sc['ticket_cooldown'])}'></div></div>"
                 f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='save' class='btn btn-orange'>Save Protection Rules</button></div></form></div>"
-            )[cite: 5]
+            )
 
             vr_cho = ch_opts(non_everyone_roles, sc["verify_role"], "Disabled (No Verified Role)", "@")
             vc_cho = ch_opts(txt_chs, sc["verify_channel"], "-- Select Verification Channel --", "#")
@@ -1090,7 +1090,7 @@ class handler(BaseHTTPRequestHandler):
                 f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'>"
                 f"<button type='submit' name='act' value='save' class='btn btn-orange'>Save Verification</button>"
                 f"<button type='submit' name='act' value='post_verify' class='btn btn-dark'>Save &amp; Post Verify Panel</button></div></form></div>"
-            )[cite: 5]
+            )
 
             ap = sc.get("active_preset", "")
             def p_badge(code):
@@ -1109,7 +1109,7 @@ class handler(BaseHTTPRequestHandler):
                 f"<form method='POST' action='/save' class='cmd-row {'active-preset' if ap=='preset_chill' else ''}'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
                 f"<div><div style='font-weight:700;font-size:13px'>Chill / Open Server{p_badge('preset_chill')}</div><div style='color:#9ca3af;font-size:12px'>Links allowed, word filter + anti-spam active, fast 15s ticket cooldown</div></div>"
                 f"<button type='submit' name='act' value='preset_chill' class='btn {p_btn_cls('preset_chill')}'>{'Applied' if ap=='preset_chill' else 'Apply'}</button></form></div></div>"
-            )[cite: 5]
+            )
 
             disabled = set(sc["disabled_cmds"])
             cmd_items = "".join(
@@ -1155,7 +1155,7 @@ class handler(BaseHTTPRequestHandler):
                 ("verification", "Verification"),
                 ("commands", "Commands & Tools"),
                 ("presets", "1-Click Presets"),
-            ][cite: 5]
+            ]
             side_btns = "".join(
                 f"<button type='button' data-tab='{t_key}' onclick=\"tmSwitchTab('{t_key}')\" class='tab-btn {'act' if tab==t_key else ''}'>{esc(t_lbl)}</button>"
                 for t_key, t_lbl in tab_defs
@@ -1173,7 +1173,7 @@ class handler(BaseHTTPRequestHandler):
                 f"<h1 style='margin:6px 0 18px;font-size:26px'>{esc(srv_name)}</h1><div class='layout'><div class='side'>{side_links}</div>"
                 f"<div class='panel'>{notice}{tickets_pane}{welcome_pane}{announce_pane}{automod_pane}{verification_pane}{commands_pane}{presets_pane}</div></div></div>"
             )
-            return self.send_html(page(f"{srv_name} - TicketMint", html_out, sess))[cite: 5]
+            return self.send_html(page(f"{srv_name} - TicketMint", html_out, sess))
 
         cta = "Go to Dashboard" if sess else "Authorize & Open Dashboard"
         home = (
@@ -1184,7 +1184,7 @@ class handler(BaseHTTPRequestHandler):
             f"<div class='card'><h3 style='color:#ff7a00;margin-bottom:6px;font-size:16px'>Anti-Bypass Auto-Mod</h3><p style='color:#9ca3af;font-size:13px'>Blocks stretched words, leetspeak, protected role pings, links, caps, and spam.</p></div>"
             f"<div class='card'><h3 style='color:#ff7a00;margin-bottom:6px;font-size:16px'>Instant Web Control</h3><p style='color:#9ca3af;font-size:13px'>Instant tab switching, welcome cards, verification, announcements, and 1-click presets.</p></div></div>"
         )
-        return self.send_html(page("TicketMint - Yapin' Bot", home, sess))[cite: 5]
+        return self.send_html(page("TicketMint - Yapin' Bot", home, sess))
 
     def do_POST(self):
         try:
@@ -1192,7 +1192,7 @@ class handler(BaseHTTPRequestHandler):
         except Exception as e:
             self.send_html(
                 page("Save Error", f"<div class='wrap'><div class='panel'><h2 style='color:#ff7a00'>Action Failed</h2><p style='color:#9ca3af;margin-top:8px'>{esc(clean_err(e))}</p><div style='margin-top:14px'><a href='/dashboard' class='btn btn-orange'>Back to Dashboard</a></div></div></div>")
-            )[cite: 5]
+            )
 
     def _handle_post(self):
         length = int(self.headers.get("Content-Length", 0) or 0)
@@ -1205,7 +1205,7 @@ class handler(BaseHTTPRequestHandler):
         tab = data.get("tab", ["tickets"])[0].strip().lower()
         if tab not in ("tickets", "welcome", "announce", "automod", "verification", "commands", "presets"):
             tab = "tickets"
-        act = data.get("act", ["save"])[0].strip().lower()[cite: 5]
+        act = data.get("act", ["save"])[0].strip().lower()
 
         if sess and sid and path == "/sync":
             existing_meta = {}
@@ -1219,7 +1219,7 @@ class handler(BaseHTTPRequestHandler):
                 pass
             sync_server_metadata(sid, existing_meta)
             queue_outbox({"type": "sync_meta", "server_id": sid})
-            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab={urllib.parse.quote(tab)}&synced=1")[cite: 5]
+            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab={urllib.parse.quote(tab)}&synced=1")
 
         if sess and sid:
             all_cfg = load_all_cfg()
@@ -1268,7 +1268,7 @@ class handler(BaseHTTPRequestHandler):
                     if not ok:
                         return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=tickets&err={urllib.parse.quote(err)}")
                     return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=tickets&sent=1")
-                return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=tickets&saved=1")[cite: 5]
+                return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=tickets&saved=1")
             if tab == "welcome":
                 cur["welcome"] = data.get("welcome", [""])[0].strip()
                 cur["autorole"] = data.get("autorole", [""])[0].strip()
@@ -1311,7 +1311,7 @@ class handler(BaseHTTPRequestHandler):
                     if not ok:
                         return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=welcome&err={urllib.parse.quote(err)}")
                     return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=welcome&sent=1")
-                return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=welcome&saved=1")[cite: 5]
+                return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=welcome&saved=1")
             if tab == "announce":
                 ann_cid = data.get("ann_channel", [""])[0].strip()
                 ann_title = data.get("ann_title", [cur["announce_default_title"]])[0].strip() or cur["announce_default_title"] or "Announcement"
@@ -1355,7 +1355,7 @@ class handler(BaseHTTPRequestHandler):
                 cur["warn_link_msg"] = data.get("warn_link_msg", ["{user}, links are not allowed in this channel."])[0].strip() or "{user}, links are not allowed in this channel."
                 all_cfg[sid] = cur
                 save_all_cfg(all_cfg, sid)
-                return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=automod&saved=1")[cite: 5]
+                return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=automod&saved=1")
             if tab == "verification":
                 cur["verify_role"] = data.get("verify_role", [""])[0].strip()
                 cur["verify_channel"] = data.get("verify_channel", [""])[0].strip()
@@ -1370,7 +1370,7 @@ class handler(BaseHTTPRequestHandler):
                     if not ok:
                         return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=verification&err={urllib.parse.quote(err)}")
                     return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=verification&sent=1")
-                return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=verification&saved=1")[cite: 5]
+                return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=verification&saved=1")
             if tab == "presets":
                 if act == "preset_gaming":
                     cur.update({"anti_link": True, "word_filter": True, "anti_spam": True, "max_tickets": 2, "ticket_cooldown": 30, "w_card": True, "active_preset": "preset_gaming"})
@@ -1380,7 +1380,7 @@ class handler(BaseHTTPRequestHandler):
                     cur.update({"anti_link": False, "anti_caps": False, "word_filter": True, "anti_spam": True, "max_tickets": 3, "ticket_cooldown": 15, "active_preset": "preset_chill"})
                 all_cfg[sid] = cur
                 save_all_cfg(all_cfg, sid)
-                return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=presets&saved=1")[cite: 5]
+                return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=presets&saved=1")
             if tab == "commands":
                 if act == "run_cmd":
                     rc_name = data.get("run_cmd_name", [""])[0].strip().lower()
@@ -1459,4 +1459,4 @@ class handler(BaseHTTPRequestHandler):
                 all_cfg[sid] = cur
                 save_all_cfg(all_cfg, sid)
                 return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&saved=1")
-        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&saved=1")[cite: 5]
+        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&saved=1")
