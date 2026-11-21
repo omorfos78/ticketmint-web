@@ -1,11 +1,11 @@
 import base64, html, json, os, random, re, secrets, time, urllib.error, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler
 
-BOT_TOKEN = os.getenv("YAPPER_BOT_TOKEN", "yb_23404489.PlvFt0GgzYy6Z-SGp8ZHfSvOh0io7LhVL7KggSTY")
-CLIENT_ID = os.getenv("YAPPER_CLIENT_ID", "c6cfe2fd-8a73-47c3-98dd-03d2da87b2d0")
-CLIENT_SECRET = os.getenv("YAPPER_CLIENT_SECRET", "ycs_1CvP3dQdoKpC-UXSfHQz2vdNW21PSfKXWycQdd_x3FI")
-REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL", "https://profound-seasnail-108379.upstash.io").rstrip("/")
-REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "gQAAAAAAAadbAAIgcDI4MTE2MjY4ODFkZGM0ZmQ1Yjg0NGE5MmU5YTAwYTI3Nw")
+BOT_TOKEN = (os.getenv("YAPPER_BOT_TOKEN") or "").strip() or "yb_23404489.PlvFt0GgzYy6Z-SGp8ZHfSvOh0io7LhVL7KggSTY"
+CLIENT_ID = (os.getenv("YAPPER_CLIENT_ID") or "").strip() or "c6cfe2fd-8a73-47c3-98dd-03d2da87b2d0"
+CLIENT_SECRET = (os.getenv("YAPPER_CLIENT_SECRET") or "").strip() or "ycs_1CvP3dQdoKpC-UXSfHQz2vdNW21PSfKXWycQdd_x3FI"
+REDIS_URL = ((os.getenv("UPSTASH_REDIS_REST_URL") or "").strip() or "https://profound-seasnail-108379.upstash.io").rstrip("/")
+REDIS_TOKEN = (os.getenv("UPSTASH_REDIS_REST_TOKEN") or "").strip() or "gQAAAAAAAadbAAIgcDI4MTE2MjY4ODFkZGM0ZmQ1Yjg0NGE5MmU5YTAwYTI3Nw"
 Y_HOST = "www." + "yapin.gg"
 API_BASE = f"https://{Y_HOST}/api/bot"
 OAUTH_AUTH = f"https://{Y_HOST}/oauth/authorize"
@@ -13,13 +13,13 @@ OAUTH_TOKEN = f"https://{Y_HOST}/api/oauth/token"
 SITE_HOST = "ticketmint-web." + "vercel.app"
 REDIR_URI = f"https://{SITE_HOST}/callback"
 INVITE_URL = "https://" + "yapin.gg/bot/23404489-32ad-42d7-ac93-c1ba71cb2574"
-SITE_LOGO_URL = os.getenv("SITE_LOGO_URL", "").strip()
+SITE_LOGO_URL = (os.getenv("SITE_LOGO_URL") or "").strip()
 
 DEFAULT_OPEN_MSG = "🎫 **{user}** opened **{ticket}** — *Reason:* {reason}"
 DEFAULT_CLOSE_MSG = "🔒 **{ticket}** was closed by **{user}** — *Reason:* {reason}"
 DEFAULT_CLAIM_MSG = "🛡️ **{ticket}** is now claimed by **{user}** — *Reason:* {reason}"
 WARN_MUTE_THRESHOLD = 3
-WARN_MUTE_SECONDS = 2 * 60 * 60  # 2 hours
+WARN_MUTE_SECONDS = 2 * 60 * 60
 
 LOGO_SVG_URI = (
     "data:image/svg+xml,"
@@ -33,7 +33,6 @@ LOGO_SVG_URI = (
     "%3C/g%3E%3C/svg%3E"
 )
 
-# (key, display_label, description, mod_only)
 ALL_COMMANDS = [
     ("roll", "/roll", "Roll a random number from 1 to 999 (or 1 to max)", False),
     ("ticketpanel", "/ticketpanel", "Post the orange Open a Ticket panel", True),
@@ -226,7 +225,7 @@ def y_api(method, path, body=None, bearer=None, base_url=None):
     hdrs = {
         "Authorization": f"Bearer {bearer or BOT_TOKEN}",
         "Content-Type": "application/json",
-        "User-Agent": "TicketMintWeb/2.8",
+        "User-Agent": "TicketMintWeb/2.9",
     }
     data = json.dumps(body).encode("utf-8") if body is not None else None
     root = (base_url or API_BASE).rstrip("/")
@@ -621,6 +620,52 @@ def post_verify_panel(cid, sname="Server", sid=""):
     return True, ("" if queued else "Outbox queue unavailable")
 
 
+def exchange_oauth_token(code):
+    basic_b64 = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode("utf-8")).decode("ascii")
+    form_payload = urllib.parse.urlencode({
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": REDIR_URI,
+    }).encode("utf-8")
+    json_payload = json.dumps({
+        "client_id": CLIENT_ID,
+        "client_secret": CLIENT_SECRET,
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": REDIR_URI,
+    }).encode("utf-8")
+    basic_form_payload = urllib.parse.urlencode({
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": REDIR_URI,
+    }).encode("utf-8")
+
+    attempts = [
+        (form_payload, {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json", "User-Agent": "TicketMintWeb/2.9"}),
+        (json_payload, {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "TicketMintWeb/2.9"}),
+        (basic_form_payload, {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json", "Authorization": f"Basic {basic_b64}", "User-Agent": "TicketMintWeb/2.9"}),
+    ]
+    last_err = ""
+    for b_data, hdrs in attempts:
+        try:
+            req = urllib.request.Request(OAUTH_TOKEN, data=b_data, headers=hdrs, method="POST")
+            tok_data = json.loads(urllib.request.urlopen(req, timeout=6).read().decode("utf-8"))
+            if isinstance(tok_data, dict) and tok_data.get("access_token"):
+                return tok_data
+            if isinstance(tok_data, dict) and tok_data.get("error"):
+                last_err = json.dumps(tok_data)
+        except urllib.error.HTTPError as he:
+            body_txt = he.read().decode("utf-8", errors="ignore")
+            last_err = f"{he.code}: {body_txt}"
+            if he.code not in (400, 401, 415):
+                break
+        except Exception as e:
+            last_err = clean_err(e)
+    raise RuntimeError(last_err or "No access_token returned")
+
+
 CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#0b0d12;color:#f3f4f6;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;min-height:100vh;display:flex;flex-direction:column}
@@ -834,40 +879,7 @@ class handler(BaseHTTPRequestHandler):
             if not code:
                 return self.redir("/")
             try:
-                tok_data = None
-                last_err = ""
-                attempts = [
-                    (
-                        urllib.parse.urlencode({
-                            "client_id": CLIENT_ID,
-                            "client_secret": CLIENT_SECRET,
-                            "grant_type": "authorization_code",
-                            "code": code,
-                            "redirect_uri": REDIR_URI,
-                        }).encode("utf-8"),
-                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/2.8"},
-                    ),
-                    (
-                        json.dumps({
-                            "client_id": CLIENT_ID,
-                            "client_secret": CLIENT_SECRET,
-                            "grant_type": "authorization_code",
-                            "code": code,
-                            "redirect_uri": REDIR_URI,
-                        }).encode("utf-8"),
-                        {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/2.8"},
-                    ),
-                ]
-                for b_data, hdrs in attempts:
-                    try:
-                        req = urllib.request.Request(OAUTH_TOKEN, data=b_data, headers=hdrs, method="POST")
-                        tok_data = json.loads(urllib.request.urlopen(req, timeout=5).read().decode("utf-8"))
-                        if tok_data.get("access_token"):
-                            break
-                    except urllib.error.HTTPError as he:
-                        last_err = f"{he.code}: {he.read().decode(errors='ignore')}"
-                if not tok_data or not tok_data.get("access_token"):
-                    raise RuntimeError(last_err or "No access_token returned")
+                tok_data = exchange_oauth_token(code)
                 access = tok_data.get("access_token", "")
                 me_raw = tok_data.get("user") if isinstance(tok_data.get("user"), dict) else decode_jwt(tok_data.get("id_token", "") or access)
                 if not me_raw:
@@ -875,7 +887,7 @@ class handler(BaseHTTPRequestHandler):
                         try:
                             me_req = urllib.request.Request(
                                 f"https://{Y_HOST}{ep}",
-                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/2.8"},
+                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/2.9"},
                             )
                             cand = json.loads(urllib.request.urlopen(me_req, timeout=5).read().decode("utf-8"))
                             if isinstance(cand, dict):
