@@ -1,11 +1,11 @@
-import base64, html, json, os, random, re, secrets, time, urllib.error, urllib.parse, urllib.request
+import base64, gzip, html, json, os, random, re, secrets, time, urllib.error, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler
 
-BOT_TOKEN = (os.getenv("YAPPER_BOT_TOKEN") or "").strip() or "yb_23404489.PlvFt0GgzYy6Z-SGp8ZHfSvOh0io7LhVL7KggSTY"
-CLIENT_ID = (os.getenv("YAPPER_CLIENT_ID") or "").strip() or "c6cfe2fd-8a73-47c3-98dd-03d2da87b2d0"
-CLIENT_SECRET = (os.getenv("YAPPER_CLIENT_SECRET") or "").strip() or "ycs_1CvP3dQdoKpC-UXSfHQz2vdNW21PSfKXWycQdd_x3FI"
-REDIS_URL = ((os.getenv("UPSTASH_REDIS_REST_URL") or "").strip() or "https://profound-seasnail-108379.upstash.io").rstrip("/")
-REDIS_TOKEN = (os.getenv("UPSTASH_REDIS_REST_TOKEN") or "").strip() or "gQAAAAAAAadbAAIgcDI4MTE2MjY4ODFkZGM0ZmQ1Yjg0NGE5MmU5YTAwYTI3Nw"
+BOT_TOKEN = os.getenv("YAPPER_BOT_TOKEN", "yb_23404489.PlvFt0GgzYy6Z-SGp8ZHfSvOh0io7LhVL7KggSTY")
+CLIENT_ID = "c6cfe2fd-8a73-47c3-98dd-03d2da87b2d0"
+CLIENT_SECRET = "ycs_1CvP3dQdoKpC-UXSfHQz2vdNW21PSfKXWycQdd_x3FI"
+REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL", "https://profound-seasnail-108379.upstash.io").rstrip("/")
+REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "gQAAAAAAAadbAAIgcDI4MTE2MjY4ODFkZGM0ZmQ1Yjg0NGE5MmU5YTAwYTI3Nw")
 Y_HOST = "www." + "yapin.gg"
 API_BASE = f"https://{Y_HOST}/api/bot"
 OAUTH_AUTH = f"https://{Y_HOST}/oauth/authorize"
@@ -13,25 +13,12 @@ OAUTH_TOKEN = f"https://{Y_HOST}/api/oauth/token"
 SITE_HOST = "ticketmint-web." + "vercel.app"
 REDIR_URI = f"https://{SITE_HOST}/callback"
 INVITE_URL = "https://" + "yapin.gg/bot/23404489-32ad-42d7-ac93-c1ba71cb2574"
-SITE_LOGO_URL = (os.getenv("SITE_LOGO_URL") or "").strip()
 
 DEFAULT_OPEN_MSG = "🎫 **{user}** opened **{ticket}** — *Reason:* {reason}"
 DEFAULT_CLOSE_MSG = "🔒 **{ticket}** was closed by **{user}** — *Reason:* {reason}"
 DEFAULT_CLAIM_MSG = "🛡️ **{ticket}** is now claimed by **{user}** — *Reason:* {reason}"
 WARN_MUTE_THRESHOLD = 3
 WARN_MUTE_SECONDS = 2 * 60 * 60
-
-LOGO_SVG_URI = (
-    "data:image/svg+xml,"
-    "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E"
-    "%3Ccircle cx='64' cy='64' r='64' fill='%23111317'/%3E"
-    "%3Cg transform='rotate(-42 64 64)'%3E"
-    "%3Crect x='24' y='38' width='80' height='52' rx='8' fill='%23ff7a00'/%3E"
-    "%3Ccircle cx='24' cy='64' r='9' fill='%23111317'/%3E"
-    "%3Ccircle cx='104' cy='64' r='9' fill='%23111317'/%3E"
-    "%3Cpath d='M48 64 L59 75 L80 52' fill='none' stroke='%23ffffff' stroke-width='9' stroke-linecap='round' stroke-linejoin='round'/%3E"
-    "%3C/g%3E%3C/svg%3E"
-)
 
 ALL_COMMANDS = [
     ("roll", "/roll", "Roll a random number from 1 to 999 (or 1 to max)", False),
@@ -225,7 +212,7 @@ def y_api(method, path, body=None, bearer=None, base_url=None):
     hdrs = {
         "Authorization": f"Bearer {bearer or BOT_TOKEN}",
         "Content-Type": "application/json",
-        "User-Agent": "TicketMintWeb/2.9",
+        "User-Agent": "TicketMintWeb/2.8",
     }
     data = json.dumps(body).encode("utf-8") if body is not None else None
     root = (base_url or API_BASE).rstrip("/")
@@ -620,52 +607,6 @@ def post_verify_panel(cid, sname="Server", sid=""):
     return True, ("" if queued else "Outbox queue unavailable")
 
 
-def exchange_oauth_token(code):
-    basic_b64 = base64.b64encode(f"{CLIENT_ID}:{CLIENT_SECRET}".encode("utf-8")).decode("ascii")
-    form_payload = urllib.parse.urlencode({
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": REDIR_URI,
-    }).encode("utf-8")
-    json_payload = json.dumps({
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": REDIR_URI,
-    }).encode("utf-8")
-    basic_form_payload = urllib.parse.urlencode({
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": REDIR_URI,
-    }).encode("utf-8")
-
-    attempts = [
-        (form_payload, {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json", "User-Agent": "TicketMintWeb/2.9"}),
-        (json_payload, {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "TicketMintWeb/2.9"}),
-        (basic_form_payload, {"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json", "Authorization": f"Basic {basic_b64}", "User-Agent": "TicketMintWeb/2.9"}),
-    ]
-    last_err = ""
-    for b_data, hdrs in attempts:
-        try:
-            req = urllib.request.Request(OAUTH_TOKEN, data=b_data, headers=hdrs, method="POST")
-            tok_data = json.loads(urllib.request.urlopen(req, timeout=6).read().decode("utf-8"))
-            if isinstance(tok_data, dict) and tok_data.get("access_token"):
-                return tok_data
-            if isinstance(tok_data, dict) and tok_data.get("error"):
-                last_err = json.dumps(tok_data)
-        except urllib.error.HTTPError as he:
-            body_txt = he.read().decode("utf-8", errors="ignore")
-            last_err = f"{he.code}: {body_txt}"
-            if he.code not in (400, 401, 415):
-                break
-        except Exception as e:
-            last_err = clean_err(e)
-    raise RuntimeError(last_err or "No access_token returned")
-
-
 CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#0b0d12;color:#f3f4f6;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;min-height:100vh;display:flex;flex-direction:column}
@@ -673,7 +614,7 @@ a{text-decoration:none;color:inherit}
 .nav{display:flex;justify-content:space-between;align-items:center;padding:14px 20px;border-bottom:1px solid #1c202b;background:#0e1118}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:19px;color:#fff;transition:transform .12s ease}
 .brand:hover{transform:translateY(-1px)}
-.brand-img{width:28px;height:28px;border-radius:50%;object-fit:cover;flex-shrink:0}
+.badge{background:#ff7a00;color:#000;padding:3px 8px;border-radius:6px;font-weight:900;font-size:13px}
 .nav-links{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .btn{padding:9px 15px;border-radius:8px;font-weight:700;font-size:13px;cursor:pointer;border:none;display:inline-flex;align-items:center;gap:6px;transition:transform .11s ease,background-color .12s ease,border-color .12s ease}
 .btn:hover{transform:translateY(-1px)}
@@ -788,7 +729,6 @@ window.addEventListener('DOMContentLoaded',function(){
 
 
 def page(title, body, user=None):
-    logo_src = SITE_LOGO_URL or LOGO_SVG_URI
     inv = f"<a href='{INVITE_URL}' class='btn btn-dark'>+ Invite Bot</a>"
     right = (
         f"{inv} <a href='/dashboard' class='btn btn-dark'>@{esc(user['username'])}</a> <a href='/logout' class='btn btn-dark'>Logout</a>"
@@ -797,10 +737,8 @@ def page(title, body, user=None):
     )
     return (
         f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"<link rel='icon' href='{esc(logo_src)}'>"
-        f"<meta property='og:image' content='{esc(logo_src)}'>"
         f"<title>{esc(title)}</title><style>{CSS}</style></head><body>"
-        f"<div class='nav'><a href='/' class='brand'><img src='{esc(logo_src)}' class='brand-img' alt='TicketMint'> TicketMint</a><div class='nav-links'>{right}</div></div>"
+        f"<div class='nav'><a href='/' class='brand'><span class='badge'>TM</span> TicketMint</a><div class='nav-links'>{right}</div></div>"
         f"{body}{INSTANT_JS}</body></html>"
     )
 
@@ -832,13 +770,18 @@ class handler(BaseHTTPRequestHandler):
 
     def send_html(self, html_body, cookie=None):
         raw_bytes = html_body.encode("utf-8")
+        ae = self.headers.get("Accept-Encoding", "")
+        use_gz = "gzip" in ae and len(raw_bytes) > 1024
+        out = gzip.compress(raw_bytes, compresslevel=5) if use_gz else raw_bytes
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(raw_bytes)))
+        if use_gz:
+            self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(out)))
         if cookie:
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
-        self.wfile.write(raw_bytes)
+        self.wfile.write(out)
 
     def redir(self, loc, cookie=None):
         self.send_response(302)
@@ -879,7 +822,40 @@ class handler(BaseHTTPRequestHandler):
             if not code:
                 return self.redir("/")
             try:
-                tok_data = exchange_oauth_token(code)
+                tok_data = None
+                last_err = ""
+                attempts = [
+                    (
+                        urllib.parse.urlencode({
+                            "client_id": CLIENT_ID,
+                            "client_secret": CLIENT_SECRET,
+                            "grant_type": "authorization_code",
+                            "code": code,
+                            "redirect_uri": REDIR_URI,
+                        }).encode("utf-8"),
+                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/2.8"},
+                    ),
+                    (
+                        json.dumps({
+                            "client_id": CLIENT_ID,
+                            "client_secret": CLIENT_SECRET,
+                            "grant_type": "authorization_code",
+                            "code": code,
+                            "redirect_uri": REDIR_URI,
+                        }).encode("utf-8"),
+                        {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/2.8"},
+                    ),
+                ]
+                for b_data, hdrs in attempts:
+                    try:
+                        req = urllib.request.Request(OAUTH_TOKEN, data=b_data, headers=hdrs, method="POST")
+                        tok_data = json.loads(urllib.request.urlopen(req, timeout=5).read().decode("utf-8"))
+                        if tok_data.get("access_token"):
+                            break
+                    except urllib.error.HTTPError as he:
+                        last_err = f"{he.code}: {he.read().decode(errors='ignore')}"
+                if not tok_data or not tok_data.get("access_token"):
+                    raise RuntimeError(last_err or "No access_token returned")
                 access = tok_data.get("access_token", "")
                 me_raw = tok_data.get("user") if isinstance(tok_data.get("user"), dict) else decode_jwt(tok_data.get("id_token", "") or access)
                 if not me_raw:
@@ -887,7 +863,7 @@ class handler(BaseHTTPRequestHandler):
                         try:
                             me_req = urllib.request.Request(
                                 f"https://{Y_HOST}{ep}",
-                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/2.9"},
+                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/2.8"},
                             )
                             cand = json.loads(urllib.request.urlopen(me_req, timeout=5).read().decode("utf-8"))
                             if isinstance(cand, dict):
@@ -902,9 +878,7 @@ class handler(BaseHTTPRequestHandler):
                 uid = me_raw.get("id") or me_raw.get("user_id") or me_raw.get("sub")
                 uname = me_raw.get("username") or me_raw.get("preferred_username") or me_raw.get("name") or me_raw.get("display_name") or "user"
                 sid_tok = secrets.token_urlsafe(24)
-                saved_sess = r_cmd("SET", f"tm:sess:{sid_tok}", json.dumps({"id": uid, "username": uname}), "EX", "604800")
-                if not saved_sess:
-                    raise RuntimeError("Session store unavailable")
+                r_cmd("SET", f"tm:sess:{sid_tok}", json.dumps({"id": uid, "username": uname}), "EX", "604800")
                 return self.redir("/dashboard", f"tm_sess={sid_tok}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800")
             except Exception as e:
                 return self.send_html(
