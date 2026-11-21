@@ -1,22 +1,38 @@
 import base64, html, json, os, random, re, secrets, time, urllib.error, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler
 
-BOT_TOKEN = os.getenv("YAPPER_BOT_TOKEN", "yb_23404489.PlvFt0GgzYy6Z-SGp8ZHfSvOh0io7LhVL7KggSTY")
-CLIENT_ID = "c6cfe2fd-8a73-47c3-98dd-03d2da87b2d0"
-CLIENT_SECRET = "ycs_1CvP3dQdoKpC-UXSfHQz2vdNW21PSfKXWycQdd_x3FI"
-REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL", "https://profound-seasnail-108379.upstash.io").rstrip("/")
-REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "gQAAAAAAAadbAAIgcDI4MTE2MjY4ODFkZGM0ZmQ1Yjg0NGE5MmU5YTAwYTI3Nw")
-Y_HOST = "www." + "yapin.gg"
+BOT_TOKEN = os.getenv("YAPPER_BOT_TOKEN", "")
+CLIENT_ID = os.getenv("YAPPER_CLIENT_ID", "c6cfe2fd-8a73-47c3-98dd-03d2da87b2d0")
+CLIENT_SECRET = os.getenv("YAPPER_CLIENT_SECRET", "")
+REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").rstrip("/")
+REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
+Y_HOST = os.getenv("YAPPER_HOST", "www.yapin.gg").strip()
 API_BASE = f"https://{Y_HOST}/api/bot"
 OAUTH_AUTH = f"https://{Y_HOST}/oauth/authorize"
 OAUTH_TOKEN = f"https://{Y_HOST}/api/oauth/token"
-SITE_HOST = "ticketmint-web." + "vercel.app"
+SITE_HOST = os.getenv("SITE_HOST", "ticketmint-web.vercel.app").strip()
 REDIR_URI = f"https://{SITE_HOST}/callback"
-INVITE_URL = "https://" + "yapin.gg/bot/23404489-32ad-42d7-ac93-c1ba71cb2574"
+INVITE_URL = os.getenv("BOT_INVITE_URL", "https://yapin.gg/bot/23404489-32ad-42d7-ac93-c1ba71cb2574").strip()
+SITE_LOGO_URL = os.getenv("SITE_LOGO_URL", "").strip()
 
 DEFAULT_OPEN_MSG = "🎫 **{user}** opened **{ticket}** — *Reason:* {reason}"
 DEFAULT_CLOSE_MSG = "🔒 **{ticket}** was closed by **{user}** — *Reason:* {reason}"
 DEFAULT_CLAIM_MSG = "🛡️ **{ticket}** is now claimed by **{user}** — *Reason:* {reason}"
+WARN_MUTE_THRESHOLD = 3
+WARN_MUTE_SECONDS = 2 * 60 * 60  # 2 hours
+
+# SVG data URI matching the dark circle + orange ticket + white checkmark icon
+LOGO_SVG_URI = (
+    "data:image/svg+xml,"
+    "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E"
+    "%3Ccircle cx='64' cy='64' r='64' fill='%23111317'/%3E"
+    "%3Cg transform='rotate(-42 64 64)'%3E"
+    "%3Crect x='24' y='38' width='80' height='52' rx='8' fill='%23ff7a00'/%3E"
+    "%3Ccircle cx='24' cy='64' r='9' fill='%23111317'/%3E"
+    "%3Ccircle cx='104' cy='64' r='9' fill='%23111317'/%3E"
+    "%3Cpath d='M48 64 L59 75 L80 52' fill='none' stroke='%23ffffff' stroke-width='9' stroke-linecap='round' stroke-linejoin='round'/%3E"
+    "%3C/g%3E%3C/svg%3E"
+)
 
 # (key, display_label, description, mod_only)
 ALL_COMMANDS = [
@@ -28,7 +44,7 @@ ALL_COMMANDS = [
     ("setwelcomechannel", "/setwelcomechannel", "Set the automatic welcome channel", True),
     ("verifypanel", "/verifypanel", "Post a 1-click member verification panel", True),
     ("announce", "/announce", "Post styled announcements in chat", True),
-    ("warn", "/warn", "Issue an official staff warning to a user", True),
+    ("warn", "/warn", "Warn a member (3 warnings = 2-hour mute)", True),
     ("clear", "/clear", "Bulk delete recent messages in a channel", True),
     ("slowmode", "/slowmode", "Set channel slowmode timer", True),
     ("role", "/role", "Add or remove a role on a member", True),
@@ -110,11 +126,108 @@ def queue_outbox(job):
         return False
 
 
+def format_ping_target(raw_ping, sid="", meta=None):
+    p = str(raw_ping or "").strip()
+    if not p:
+        return ""
+    if p.lower() in ("@everyone", "everyone"):
+        return "@everyone"
+    if re.fullmatch(r"<@&\d+>", p) or re.fullmatch(r"<@\d+>", p):
+        return p
+    role_name_clean = p.lstrip("@").strip().lower()
+    if role_name_clean and sid:
+        m = meta if isinstance(meta, dict) else {}
+        if not m:
+            try:
+                mraw = r_cmd("GET", f"ticketmint:meta:{sid}")
+                if mraw:
+                    pm = json.loads(mraw)
+                    if isinstance(pm, dict):
+                        m = pm
+            except Exception:
+                pass
+        for r in (m.get("roles") or []):
+            if isinstance(r, dict) and r.get("id"):
+                rid = str(r.get("id")).strip()
+                rname = str(r.get("name", "")).lstrip("@").strip().lower()
+                if rname and rname == role_name_clean and re.fullmatch(r"\d+", rid):
+                    return f"<@&{rid}>"
+    return f"@{role_name_clean}" if role_name_clean else p
+
+
+def apply_user_warning(sid, target_raw, reason="", mod_user="Moderator"):
+    clean_target = re.sub(r"[<@!>]", "", str(target_raw or "").strip()) or str(target_raw or "").strip() or "unknown"
+    clean_reason = str(reason or "").strip() or "Rule violation"
+    w_key = f"ticketmint:warns:{sid}:{clean_target}"
+    h_key = f"ticketmint:warn_logs:{sid}:{clean_target}"
+    mute_key = f"ticketmint:mute:{sid}:{clean_target}"
+
+    new_count = 1
+    try:
+        res = r_cmd("INCR", w_key)
+        if isinstance(res, int) and res > 0:
+            new_count = res
+        elif res is not None and str(res).isdigit():
+            new_count = int(res)
+        else:
+            prev = r_cmd("GET", w_key)
+            new_count = (int(prev) if prev and str(prev).isdigit() else 0) + 1
+            r_cmd("SET", w_key, str(new_count))
+    except Exception:
+        pass
+
+    entry = {
+        "count": new_count,
+        "reason": clean_reason,
+        "moderator": mod_user,
+        "ts": int(time.time()),
+    }
+    try:
+        r_cmd("RPUSH", h_key, json.dumps(entry))
+    except Exception:
+        pass
+
+    muted = False
+    mute_until = 0
+    if new_count >= WARN_MUTE_THRESHOLD:
+        muted = True
+        mute_until = int(time.time()) + WARN_MUTE_SECONDS
+        try:
+            r_cmd("SET", mute_key, json.dumps({"muted_until": mute_until, "duration_seconds": WARN_MUTE_SECONDS, "reason": f"Reached {new_count} warnings: {clean_reason}"}), "EX", str(WARN_MUTE_SECONDS))
+        except Exception:
+            pass
+        queue_outbox({
+            "type": "mute",
+            "server_id": str(sid),
+            "user_id": clean_target,
+            "target": str(target_raw or clean_target),
+            "duration_seconds": WARN_MUTE_SECONDS,
+            "duration_label": "2 hours",
+            "warning_count": new_count,
+            "reason": f"Reached {new_count} warnings: {clean_reason}",
+            "moderator": mod_user,
+        })
+
+    queue_outbox({
+        "type": "warn",
+        "server_id": str(sid),
+        "user_id": clean_target,
+        "target": str(target_raw or clean_target),
+        "warning_count": new_count,
+        "max_warnings": WARN_MUTE_THRESHOLD,
+        "muted_2h": muted,
+        "duration_seconds": WARN_MUTE_SECONDS if muted else 0,
+        "reason": clean_reason,
+        "moderator": mod_user,
+    })
+    return new_count, muted, mute_until, clean_target, clean_reason
+
+
 def y_api(method, path, body=None, bearer=None, base_url=None):
     hdrs = {
         "Authorization": f"Bearer {bearer or BOT_TOKEN}",
         "Content-Type": "application/json",
-        "User-Agent": "TicketMintWeb/2.7",
+        "User-Agent": "TicketMintWeb/2.9",
     }
     data = json.dumps(body).encode("utf-8") if body is not None else None
     root = (base_url or API_BASE).rstrip("/")
@@ -140,6 +253,8 @@ def y_api(method, path, body=None, bearer=None, base_url=None):
 
 
 def safe_y(method, path, body=None):
+    if not BOT_TOKEN:
+        return {}
     try:
         return y_api(method, path, body)
     except Exception:
@@ -282,6 +397,8 @@ def sync_server_metadata(sid, existing_meta=None):
 
 
 def post_raw_message(cid, payload):
+    if not BOT_TOKEN:
+        return False, "Bot token not configured."
     base_dict = payload if isinstance(payload, dict) else {"content": str(payload)}
     embeds_list = base_dict.get("embeds") if isinstance(base_dict.get("embeds"), list) else []
     first_desc = embeds_list[0].get("description", "") if embeds_list and isinstance(embeds_list[0], dict) else ""
@@ -317,43 +434,44 @@ def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00
     except Exception:
         c_int = 0xFF7A00
 
-    has_embed = bool(title or description or image_url or footer)
-    parts = []
-    if ping:
-        parts.append(ping)
-    if content and content != ping:
-        parts.append(content)
+    sid_val = extra.get("server_id", "") if isinstance(extra, dict) else ""
+    formatted_ping = format_ping_target(ping, sid=sid_val) if ping else ""
+    body_text = str(description if description != "" else content).strip()
+
+    has_embed = bool(title or body_text or image_url or footer)
+    ping_line = formatted_ping.strip()
+
     if not has_embed:
+        parts = []
+        if ping_line:
+            parts.append(ping_line)
+        if content and content != ping and content != formatted_ping:
+            parts.append(content.strip())
+        combined_text = "\n".join([p for p in parts if p]).strip() or "TicketMint"
+        msg_payload = {"content": combined_text}
+    else:
+        embed_obj = {"description": body_text or "", "color": c_int}
         if title:
-            parts.append(f"**{title}**")
-        if description:
-            parts.append(description)
+            embed_obj["title"] = title
         if image_url:
-            parts.append(image_url)
+            embed_obj["image"] = {"url": image_url}
         if footer:
-            parts.append(f"-# {footer}")
-    combined_text = "\n\n".join([p for p in parts if p]).strip()
-
-    embed_obj = {"description": description or "", "color": c_int}
-    if title:
-        embed_obj["title"] = title
-    if image_url:
-        embed_obj["image"] = {"url": image_url}
-    if footer:
-        embed_obj["footer"] = {"text": footer}
-
-    msg_payload = {"embeds": [embed_obj]} if has_embed else {"content": combined_text or "TicketMint"}
-    if combined_text and has_embed:
-        msg_payload["content"] = combined_text
+            embed_obj["footer"] = {"text": footer}
+        msg_payload = {"embeds": [embed_obj]}
+        if ping_line:
+            msg_payload["content"] = ping_line
+        combined_text = "\n".join([p for p in [ping_line, body_text or title] if p]).strip() or "TicketMint"
 
     direct_ok, direct_err = post_raw_message(cid, msg_payload)
     job = {
         "type": kind,
         "channel_id": str(cid),
-        "ping": ping,
-        "text": combined_text or description or title or "TicketMint",
+        "ping": ping_line,
+        "message": body_text,
+        "content": combined_text,
+        "text": combined_text,
         "title": title,
-        "description": description,
+        "description": body_text,
         "image_url": image_url,
         "footer": footer,
         "color": f"#{str(color_hex or '#ff7a00').lstrip('#')}",
@@ -437,6 +555,7 @@ def get_scfg(sid):
         "announce_default_title": str(raw.get("announce_default_title", "Announcement") or "Announcement"),
         "announce_color": str(raw.get("announce_color", "#ff7a00") or "#ff7a00"),
         "announce_footer": str(raw.get("announce_footer", "") or ""),
+        "ticket_reason": str(raw.get("ticket_reason", "Support • General Inquiry") or "Support • General Inquiry"),
         "ticket_open_msg": str(raw.get("ticket_open_msg", DEFAULT_OPEN_MSG) or DEFAULT_OPEN_MSG),
         "ticket_close_msg": str(raw.get("ticket_close_msg", DEFAULT_CLOSE_MSG) or DEFAULT_CLOSE_MSG),
         "ticket_claim_msg": str(raw.get("ticket_claim_msg", DEFAULT_CLAIM_MSG) or DEFAULT_CLAIM_MSG),
@@ -462,6 +581,7 @@ def is_admin(sid, uid):
 
 def post_panel(cid, sid=""):
     bname = u_dict(safe_y("GET", "/me"), "bot").get("name", "TicketMint")
+    sc = get_scfg(sid) if sid else get_scfg("")
     payload = {
         "flags": 32768,
         "components": [{
@@ -478,7 +598,14 @@ def post_panel(cid, sid=""):
         }],
     }
     direct_ok, direct_err = post_raw_message(cid, payload)
-    queued = queue_outbox({"type": "panel", "server_id": str(sid), "channel_id": str(cid)})
+    queued = queue_outbox({
+        "type": "panel",
+        "server_id": str(sid),
+        "channel_id": str(cid),
+        "ticket_reason": sc.get("ticket_reason", "Support • General Inquiry"),
+        "open_template": sc.get("ticket_open_msg", DEFAULT_OPEN_MSG),
+        "close_template": sc.get("ticket_close_msg", DEFAULT_CLOSE_MSG),
+    })
     if not direct_ok and not queued:
         return False, direct_err or "Could not post ticket panel."
     return True, ""
@@ -512,7 +639,7 @@ a{text-decoration:none;color:inherit}
 .nav{display:flex;justify-content:space-between;align-items:center;padding:14px 20px;border-bottom:1px solid #1c202b;background:#0e1118}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:19px;color:#fff;transition:transform .12s ease}
 .brand:hover{transform:translateY(-1px)}
-.badge{background:#ff7a00;color:#000;padding:3px 8px;border-radius:6px;font-weight:900;font-size:13px}
+.brand-img{width:28px;height:28px;border-radius:50%;object-fit:cover;flex-shrink:0}
 .nav-links{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .btn{padding:9px 15px;border-radius:8px;font-weight:700;font-size:13px;cursor:pointer;border:none;display:inline-flex;align-items:center;gap:6px;transition:transform .11s ease,background-color .12s ease,border-color .12s ease}
 .btn:hover{transform:translateY(-1px)}
@@ -627,6 +754,7 @@ window.addEventListener('DOMContentLoaded',function(){
 
 
 def page(title, body, user=None):
+    logo_src = SITE_LOGO_URL or LOGO_SVG_URI
     inv = f"<a href='{INVITE_URL}' class='btn btn-dark'>+ Invite Bot</a>"
     right = (
         f"{inv} <a href='/dashboard' class='btn btn-dark'>@{esc(user['username'])}</a> <a href='/logout' class='btn btn-dark'>Logout</a>"
@@ -635,8 +763,10 @@ def page(title, body, user=None):
     )
     return (
         f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<link rel='icon' href='{esc(logo_src)}'>"
+        f"<meta property='og:image' content='{esc(logo_src)}'>"
         f"<title>{esc(title)}</title><style>{CSS}</style></head><body>"
-        f"<div class='nav'><a href='/' class='brand'><span class='badge'>TM</span> TicketMint</a><div class='nav-links'>{right}</div></div>"
+        f"<div class='nav'><a href='/' class='brand'><img src='{esc(logo_src)}' class='brand-img' alt='TicketMint'> TicketMint</a><div class='nav-links'>{right}</div></div>"
         f"{body}{INSTANT_JS}</body></html>"
     )
 
@@ -726,7 +856,7 @@ class handler(BaseHTTPRequestHandler):
                             "code": code,
                             "redirect_uri": REDIR_URI,
                         }).encode("utf-8"),
-                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/2.7"},
+                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/2.9"},
                     ),
                     (
                         json.dumps({
@@ -736,7 +866,7 @@ class handler(BaseHTTPRequestHandler):
                             "code": code,
                             "redirect_uri": REDIR_URI,
                         }).encode("utf-8"),
-                        {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/2.7"},
+                        {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/2.9"},
                     ),
                 ]
                 for b_data, hdrs in attempts:
@@ -756,7 +886,7 @@ class handler(BaseHTTPRequestHandler):
                         try:
                             me_req = urllib.request.Request(
                                 f"https://{Y_HOST}{ep}",
-                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/2.7"},
+                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/2.9"},
                             )
                             cand = json.loads(urllib.request.urlopen(me_req, timeout=5).read().decode("utf-8"))
                             if isinstance(cand, dict):
@@ -922,8 +1052,8 @@ class handler(BaseHTTPRequestHandler):
             cho = ch_opts(txt_chs, sc["dash"], "-- Select Ticket Panel Channel --", "#")
             cao = ch_opts(cat_chs, sc["cat"], "None (Optional)", "")
             lgo = ch_opts(txt_chs, sc["logs"], "None (Optional)", "#")
-            open_prev = esc(format_ticket_log_message(sc["ticket_open_msg"], f"@{sess['username']}", "#ticket-1898", "Need help with setup", srv_name, f"@{sess['username']}"))
-            close_prev = esc(format_ticket_log_message(sc["ticket_close_msg"], f"@{sess['username']}", "#ticket-1898", "Issue solved", srv_name, f"@{sess['username']}"))
+            open_prev = esc(format_ticket_log_message(sc["ticket_open_msg"], f"@{sess['username']}", "#ticket-1898", sc["ticket_reason"], srv_name, f"@{sess['username']}"))
+            close_prev = esc(format_ticket_log_message(sc["ticket_close_msg"], f"@{sess['username']}", "#ticket-1898", sc["ticket_reason"], srv_name, f"@{sess['username']}"))
 
             tickets_pane = (
                 f"<div class='tab-pane {'act' if tab=='tickets' else ''}' data-pane='tickets'>{stats_bar}"
@@ -937,8 +1067,8 @@ class handler(BaseHTTPRequestHandler):
                 f"<div class='field'><label>Ticket Panel Channel</label><small>Channel where the Open a Ticket dashboard gets posted.</small><select name='dash'>{cho}</select></div>"
                 f"<div class='field'><label>Ticket Category (Optional)</label><small>Category where new private ticket rooms are placed.</small><select name='cat'>{cao}</select></div>"
                 f"<div class='field'><label>Ticket Logs &amp; Transcripts Channel (Optional)</label><small>Receives custom open &amp; close ticket logs and transcripts.</small><select name='logs'>{lgo}</select></div>"
-                f"<div class='field'><label>Ticket Reason (For Test Open / Close Log)</label><small>Enter a ticket reason to include in the test ticket log.</small>"
-                f"<input type='text' name='ticket_test_reason' value='Support • General Inquiry' placeholder='Type ticket reason...'></div>"
+                f"<div class='field'><label>Ticket Reason (Shown in Ticket Logs &amp; Test Logs)</label><small>Included in opened/closed ticket logs and reason placeholders.</small>"
+                f"<input type='text' name='ticket_test_reason' value='{esc(sc['ticket_reason'])}' placeholder='Type ticket reason...'></div>"
                 f"<div class='field'><label>Ticket Opened Log Message (Editable)</label><small>Variables: <b>{{user}}</b>, <b>{{ticket}}</b>, <b>{{reason}}</b>, <b>{{server}}</b>.</small>"
                 f"<input type='text' name='ticket_open_msg' value='{esc(sc['ticket_open_msg'])}' placeholder='{esc(DEFAULT_OPEN_MSG)}'>"
                 f"<div class='preview-box' style='border-left-color:#22c55e'><div style='font-size:10px;color:#9ca3af;margin-bottom:3px'>OPEN LOG PREVIEW</div><div style='font-size:13px'>{open_prev}</div></div></div>"
@@ -991,7 +1121,7 @@ class handler(BaseHTTPRequestHandler):
                 f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
                 f"<div class='field'><label>Target Channel</label><small>Choose where TicketMint should post this announcement.</small><select name='ann_channel' required>{ann_cho}</select></div>"
                 f"<div class='field row2'><div><label>Announcement Title</label><small>Displayed as a bold heading.</small><input type='text' name='ann_title' value='{esc(sc['announce_default_title'])}' placeholder='Server Update!' required></div>"
-                f"<div><label>Custom Ping Target (Optional)</label><small>E.g. @members, @RoleName, or leave blank ({esc(sc['announce_ping'] or 'none')}).</small><input type='text' name='ann_custom_ping' value='{esc(sc['announce_ping'])}' placeholder='@members'></div></div>"
+                f"<div><label>Custom Ping Target (Optional)</label><small>E.g. @everyone, @RoleName, or leave blank ({esc(sc['announce_ping'] or 'none')}).</small><input type='text' name='ann_custom_ping' value='{esc(sc['announce_ping'])}' placeholder='@everyone'></div></div>"
                 f"<div class='field'><label>Announcement Message</label><small>Write your announcement details below.</small><textarea name='ann_body' placeholder='Hey everyone! Here is what is new...' required></textarea></div>"
                 f"<div class='field'><label class='chk-line'><input type='checkbox' name='ann_everyone' value='1'><span>Override with @everyone above the announcement</span></label></div>"
                 f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='announce' class='btn btn-orange'>Send Announcement</button></div></form></div>"
@@ -1000,7 +1130,7 @@ class handler(BaseHTTPRequestHandler):
             automod_pane = (
                 f"<div class='tab-pane {'act' if tab=='automod' else ''}' data-pane='automod'>"
                 f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
-                f"<div class='field'><label>Chat &amp; Ticket Protection</label><small>Simple, effective protection against spam, links, caps, and bad words.</small>"
+                f"<div class='field'><label>Chat &amp; Ticket Protection</label><small>3 warnings automatically mutes a member for 2 hours.</small>"
                 f"<div class='cmd-row'><div><div style='font-weight:700;font-size:13px'>Anti-Link Guard</div><div style='color:#9ca3af;font-size:12px;margin-top:2px'>Block external links from non-staff members</div></div>"
                 f"<label class='pill'><input type='checkbox' name='anti_link' value='1' {'checked' if sc['anti_link'] else ''}><span>Active</span></label></div>"
                 f"<div class='cmd-row'><div><div style='font-weight:700;font-size:13px'>Smart Word Filter</div><div style='color:#9ca3af;font-size:12px;margin-top:2px'>Catches stretched letters, leetspeak, and custom banned words + warns privately</div></div>"
@@ -1068,15 +1198,15 @@ class handler(BaseHTTPRequestHandler):
             commands_pane = (
                 f"<div class='tab-pane {'act' if tab=='commands' else ''}' data-pane='commands'>"
                 f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
-                f"<div class='field'><label>Custom Command Design (/announce)</label><small>Set default ping (like <b>@members</b>), title, accent color, and footer.</small>"
-                f"<div class='row2'><div><label>Custom Ping Target</label><input type='text' name='announce_ping' value='{esc(sc['announce_ping'])}' placeholder='@members'></div>"
+                f"<div class='field'><label>Custom Command Design (/announce)</label><small>Set default ping (like <b>@everyone</b>), title, accent color, and footer.</small>"
+                f"<div class='row2'><div><label>Custom Ping Target</label><input type='text' name='announce_ping' value='{esc(sc['announce_ping'])}' placeholder='@everyone'></div>"
                 f"<div><label>Accent Color (Hex)</label><input type='text' name='announce_color' value='{esc(sc['announce_color'])}' placeholder='#ff7a00'></div></div>"
                 f"<div class='row2' style='margin-top:10px'><div><label>Default Title</label><input type='text' name='announce_default_title' value='{esc(sc['announce_default_title'])}' placeholder='Announcement'></div>"
                 f"<div><label>Custom Footer</label><input type='text' name='announce_footer' value='{esc(sc['announce_footer'])}' placeholder='TicketMint'></div></div></div>"
                 f"<div class='field'><label>Commands &amp; Tools</label><small>Mod-only commands are restricted to staff/admins in <b>{esc(srv_name)}</b>; member commands are open to everyone.</small>{cmd_items}</div>"
                 f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='save' class='btn btn-orange'>Save Command Settings &amp; Design</button></div></form>"
                 f"<form method='POST' action='/save' class='field' style='margin-top:12px;border-top:1px solid #1c202b'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='commands'>"
-                f"<label>Run Any Bot Command From Web</label><small>Pick a command, channel, and args/reason (e.g. /roll: 999; /announce: Title | Reason; /claimticket or /ticketclose: #ticket-1898 | Reason).</small>"
+                f"<label>Run Any Bot Command From Web</label><small>Examples: /roll: 999; /announce: Title | Body; /warn: @user or user_id | Reason (3 warnings = 2h mute).</small>"
                 f"<div class='row2'><div><label>Command</label><select name='run_cmd_name'>{run_cmd_opts}</select></div>"
                 f"<div><label>Target Channel</label><select name='run_cmd_channel'>{run_ch_opts}</select></div></div>"
                 f"<div style='margin-top:10px'><label>Arguments / Ticket Reason</label><input type='text' name='run_cmd_args' placeholder='Optional args or reason...'></div>"
@@ -1171,9 +1301,10 @@ class handler(BaseHTTPRequestHandler):
                 cur["dash"] = data.get("dash", [""])[0].strip()
                 cur["cat"] = data.get("cat", [""])[0].strip()
                 cur["logs"] = data.get("logs", [""])[0].strip()
+                t_reason = data.get("ticket_test_reason", [cur["ticket_reason"]])[0].strip() or "Support • General Inquiry"
+                cur["ticket_reason"] = t_reason
                 cur["ticket_open_msg"] = data.get("ticket_open_msg", [DEFAULT_OPEN_MSG])[0].strip() or DEFAULT_OPEN_MSG
                 cur["ticket_close_msg"] = data.get("ticket_close_msg", [DEFAULT_CLOSE_MSG])[0].strip() or DEFAULT_CLOSE_MSG
-                t_reason = data.get("ticket_test_reason", ["No reason provided"])[0].strip() or "No reason provided"
                 all_cfg[sid] = cur
                 save_all_cfg(all_cfg, sid)
                 if act == "post":
@@ -1201,7 +1332,17 @@ class handler(BaseHTTPRequestHandler):
                         color_hex="#22c55e" if ev == "open" else "#ef4444",
                         footer=f"TicketMint • {sname}",
                         kind="ticket_log",
-                        extra={"server_id": sid, "event": ev, "user": f"@{sess['username']}", "ticket": "#ticket-1898", "reason": t_reason, "server_name": sname},
+                        extra={
+                            "server_id": sid,
+                            "event": ev,
+                            "user": f"@{sess['username']}",
+                            "ticket": "#ticket-1898",
+                            "reason": t_reason,
+                            "ticket_reason": t_reason,
+                            "open_template": cur["ticket_open_msg"],
+                            "close_template": cur["ticket_close_msg"],
+                            "server_name": sname,
+                        },
                     )
                     if not ok:
                         return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=tickets&err={urllib.parse.quote(err)}")
@@ -1262,6 +1403,7 @@ class handler(BaseHTTPRequestHandler):
                     )
                 ok, err = send_msg_smart(
                     ann_cid,
+                    content=ann_body,
                     ping=ping,
                     title=ann_title,
                     description=ann_body,
@@ -1345,6 +1487,7 @@ class handler(BaseHTTPRequestHandler):
                             ann_b = rc_args or "No reason provided"
                         ok, err = send_msg_smart(
                             rc_ch,
+                            content=ann_b,
                             ping=cur["announce_ping"],
                             title=ann_t,
                             description=ann_b,
@@ -1355,6 +1498,30 @@ class handler(BaseHTTPRequestHandler):
                         )
                         if not ok:
                             return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+                    if rc_name == "warn":
+                        t_part, _, r_part = rc_args.partition("|")
+                        w_count, muted, _, clean_t, clean_r = apply_user_warning(
+                            sid,
+                            t_part.strip() or "member",
+                            reason=r_part.strip() or "Warned via dashboard",
+                            mod_user=f"@{sess['username']}",
+                        )
+                        if muted:
+                            desc = f"⚠️ **<@{clean_t}>** received warning **#{w_count}/3** and has been **muted for 2 hours**.\n**Reason:** {clean_r}"
+                        else:
+                            desc = f"⚠️ **<@{clean_t}>** received warning **#{w_count}/3** (3 warnings = 2-hour mute).\n**Reason:** {clean_r}"
+                        if rc_ch:
+                            send_msg_smart(
+                                rc_ch,
+                                content=desc,
+                                title="⚠️ Warning Issued" if not muted else "🔇 2-Hour Mute Applied",
+                                description=desc,
+                                color_hex="#ef4444" if muted else "#f59e0b",
+                                footer=f"Warned by @{sess['username']} • TicketMint",
+                                kind="warn_notice",
+                                extra={"server_id": sid, "user_id": clean_t, "warning_count": w_count, "muted_2h": muted},
+                            )
                         return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
                     if rc_name == "roll":
                         upper = 999
