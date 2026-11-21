@@ -16,6 +16,7 @@ INVITE_URL = "https://" + "yapin.gg/bot/23404489-32ad-42d7-ac93-c1ba71cb2574"
 
 # (key, display_label, description, mod_only)
 ALL_COMMANDS = [
+    ("roll", "/roll", "Roll a random number from 1 to 999 (or 1 to max)", False),
     ("ticketpanel", "/ticketpanel", "Post the orange Open a Ticket panel", True),
     ("claimticket", "/claimticket", "Claim an open ticket room", True),
     ("ticketclose", "/ticketclose", "Close and log an active ticket", True),
@@ -109,7 +110,7 @@ def y_api(method, path, body=None, bearer=None, base_url=None):
     hdrs = {
         "Authorization": f"Bearer {bearer or BOT_TOKEN}",
         "Content-Type": "application/json",
-        "User-Agent": "TicketMintWeb/2.3",
+        "User-Agent": "TicketMintWeb/2.4",
     }
     data = json.dumps(body).encode("utf-8") if body is not None else None
     root = (base_url or API_BASE).rstrip("/")
@@ -407,6 +408,10 @@ def get_scfg(sid):
         "warn_word_msg": str(raw.get("warn_word_msg", "{user}, that word is not allowed here.") or "{user}, that word is not allowed here."),
         "warn_link_msg": str(raw.get("warn_link_msg", "{user}, links are not allowed in this channel.") or "{user}, links are not allowed in this channel."),
         "warn_role_ping_msg": str(raw.get("warn_role_ping_msg", "{user}, you cannot ping protected roles.") or "{user}, you cannot ping protected roles."),
+        "announce_ping": str(raw.get("announce_ping", "") or ""),
+        "announce_default_title": str(raw.get("announce_default_title", "Announcement") or "Announcement"),
+        "announce_color": str(raw.get("announce_color", "#ff7a00") or "#ff7a00"),
+        "announce_footer": str(raw.get("announce_footer", "") or ""),
     }
 
 
@@ -678,7 +683,7 @@ class handler(BaseHTTPRequestHandler):
                             "code": code,
                             "redirect_uri": REDIR_URI,
                         }).encode("utf-8"),
-                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/2.3"},
+                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/2.4"},
                     ),
                     (
                         json.dumps({
@@ -688,7 +693,7 @@ class handler(BaseHTTPRequestHandler):
                             "code": code,
                             "redirect_uri": REDIR_URI,
                         }).encode("utf-8"),
-                        {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/2.3"},
+                        {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/2.4"},
                     ),
                 ]
                 for b_data, hdrs in attempts:
@@ -708,7 +713,7 @@ class handler(BaseHTTPRequestHandler):
                         try:
                             me_req = urllib.request.Request(
                                 f"https://{Y_HOST}{ep}",
-                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/2.3"},
+                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/2.4"},
                             )
                             cand = json.loads(urllib.request.urlopen(me_req, timeout=5).read().decode("utf-8"))
                             if isinstance(cand, dict):
@@ -927,9 +932,10 @@ class handler(BaseHTTPRequestHandler):
                 f"<div class='tab-pane {'act' if tab=='announce' else ''}' data-pane='announce'>"
                 f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
                 f"<div class='field'><label>Target Channel</label><small>Choose where TicketMint should post this announcement.</small><select name='ann_channel' required>{ann_cho}</select></div>"
-                f"<div class='field'><label>Announcement Title</label><small>Displayed as a bold heading.</small><input type='text' name='ann_title' placeholder='Server Update!' required></div>"
+                f"<div class='field row2'><div><label>Announcement Title</label><small>Displayed as a bold heading.</small><input type='text' name='ann_title' value='{esc(sc['announce_default_title'])}' placeholder='Server Update!' required></div>"
+                f"<div><label>Custom Ping Target (Optional)</label><small>E.g. @members, @RoleName, or leave blank to use saved default ({esc(sc['announce_ping'] or 'none')}).</small><input type='text' name='ann_custom_ping' value='{esc(sc['announce_ping'])}' placeholder='@members'></div></div>"
                 f"<div class='field'><label>Announcement Message</label><small>Write your announcement details below.</small><textarea name='ann_body' placeholder='Hey everyone! Here is what is new...' required></textarea></div>"
-                f"<div class='field'><label class='chk-line'><input type='checkbox' name='ann_everyone' value='1'><span>Ping @everyone above the announcement</span></label></div>"
+                f"<div class='field'><label class='chk-line'><input type='checkbox' name='ann_everyone' value='1'><span>Override with @everyone above the announcement</span></label></div>"
                 f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='announce' class='btn btn-orange'>Send Announcement</button></div></form></div>"
             )
 
@@ -996,11 +1002,27 @@ class handler(BaseHTTPRequestHandler):
                 f"<label class='pill'><input type='checkbox' name='enabled_cmds' value='{esc(key)}' {'checked' if key not in disabled else ''}><span>Enabled</span></label></div>"
                 for key, label, desc, mod_only in ALL_COMMANDS
             )
+            run_cmd_opts = "".join(
+                f"<option value='{esc(key)}'>{esc(label)}</option>"
+                for key, label, _, _ in ALL_COMMANDS
+            )
+            run_ch_opts = ch_opts(txt_chs, sc["dash"], "-- Select Channel --", "#")
             commands_pane = (
                 f"<div class='tab-pane {'act' if tab=='commands' else ''}' data-pane='commands'>"
                 f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
+                f"<div class='field'><label>Custom Command Design (/announce)</label><small>Design your own /announce behavior—ping <b>@members</b> instead of @everyone, set default title, color, and footer.</small>"
+                f"<div class='row2'><div><label>Custom Ping Target</label><input type='text' name='announce_ping' value='{esc(sc['announce_ping'])}' placeholder='@members'></div>"
+                f"<div><label>Accent Color (Hex)</label><input type='text' name='announce_color' value='{esc(sc['announce_color'])}' placeholder='#ff7a00'></div></div>"
+                f"<div class='row2' style='margin-top:10px'><div><label>Default Title</label><input type='text' name='announce_default_title' value='{esc(sc['announce_default_title'])}' placeholder='Announcement'></div>"
+                f"<div><label>Custom Footer</label><input type='text' name='announce_footer' value='{esc(sc['announce_footer'])}' placeholder='TicketMint'></div></div></div>"
                 f"<div class='field'><label>Commands &amp; Tools</label><small>Mod-only commands are restricted to staff/admins in <b>{esc(srv_name)}</b>; member commands are open to everyone.</small>{cmd_items}</div>"
-                f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='save' class='btn btn-orange'>Save Command Settings</button></div></form></div>"
+                f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='save' class='btn btn-orange'>Save Command Settings &amp; Design</button></div></form>"
+                f"<form method='POST' action='/save' class='field' style='margin-top:12px;border-top:1px solid #1c202b'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='commands'>"
+                f"<label>Run Any Bot Command From Web</label><small>Pick a command, channel, and optional args (e.g. for /roll: 999 or 50; for /announce: Title | Message | @members; for /role: user_id role_id).</small>"
+                f"<div class='row2'><div><label>Command</label><select name='run_cmd_name'>{run_cmd_opts}</select></div>"
+                f"<div><label>Target Channel</label><select name='run_cmd_channel'>{run_ch_opts}</select></div></div>"
+                f"<div style='margin-top:10px'><label>Arguments / Input</label><input type='text' name='run_cmd_args' placeholder='Optional args (e.g. 999 for /roll or Title | Message for /announce)'></div>"
+                f"<div style='margin-top:12px'><button type='submit' name='act' value='run_cmd' class='btn btn-orange'>Run Command</button></div></form></div>"
             )
 
             tab_defs = [
@@ -1147,9 +1169,10 @@ class handler(BaseHTTPRequestHandler):
                 return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=welcome&saved=1")
             if tab == "announce":
                 ann_cid = data.get("ann_channel", [""])[0].strip()
-                ann_title = data.get("ann_title", ["Announcement"])[0].strip() or "Announcement"
+                ann_title = data.get("ann_title", [cur["announce_default_title"]])[0].strip() or cur["announce_default_title"] or "Announcement"
                 ann_body = data.get("ann_body", [""])[0].strip()
-                ping = "@everyone" if data.get("ann_everyone") else ""
+                custom_ping = data.get("ann_custom_ping", [""])[0].strip()
+                ping = "@everyone" if data.get("ann_everyone") else (custom_ping or cur["announce_ping"])
                 if not ann_cid or not ann_body:
                     return self.redir(
                         f"/dashboard?server={urllib.parse.quote(sid)}&tab=announce&err={urllib.parse.quote('Choose a channel and enter a message.')}"
@@ -1159,9 +1182,10 @@ class handler(BaseHTTPRequestHandler):
                     ping=ping,
                     title=ann_title,
                     description=ann_body,
-                    color_hex="#ff7a00",
-                    footer=f"Announced by @{sess['username']} • TicketMint",
+                    color_hex=cur["announce_color"] or "#ff7a00",
+                    footer=cur["announce_footer"] or f"Announced by @{sess['username']} • TicketMint",
                     kind="announce",
+                    extra={"server_id": sid},
                 )
                 if not ok:
                     return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=announce&err={urllib.parse.quote(err)}")
@@ -1211,8 +1235,76 @@ class handler(BaseHTTPRequestHandler):
                 save_all_cfg(all_cfg, sid)
                 return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=presets&saved=1")
             if tab == "commands":
+                if act == "run_cmd":
+                    rc_name = data.get("run_cmd_name", [""])[0].strip().lower()
+                    rc_ch = data.get("run_cmd_channel", [""])[0].strip() or cur["dash"]
+                    rc_args = data.get("run_cmd_args", [""])[0].strip()
+                    if not rc_name:
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote('Pick a command to run.')}")
+                    if rc_name == "ticketpanel":
+                        ok, err = post_panel(rc_ch)
+                        if not ok:
+                            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+                    if rc_name == "verifypanel":
+                        sname = resolve_server_name(sid)
+                        ok, err = post_verify_panel(rc_ch, sname)
+                        if not ok:
+                            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+                    if rc_name == "announce":
+                        title, _, body = rc_args.partition("|")
+                        if not body.strip():
+                            body = rc_args or "Announcement from TicketMint Web"
+                            title = cur["announce_default_title"] or "Announcement"
+                        ok, err = send_msg_smart(
+                            rc_ch,
+                            ping=cur["announce_ping"],
+                            title=title.strip() or cur["announce_default_title"] or "Announcement",
+                            description=body.strip(),
+                            color_hex=cur["announce_color"] or "#ff7a00",
+                            footer=cur["announce_footer"] or f"Announced by @{sess['username']} • TicketMint",
+                            kind="announce",
+                            extra={"server_id": sid},
+                        )
+                        if not ok:
+                            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+                    if rc_name == "roll":
+                        import random
+                        upper = 999
+                        if rc_args.isdigit():
+                            upper = max(2, min(999, int(rc_args)))
+                        rolled = random.randint(1, upper)
+                        ok, err = send_msg_smart(
+                            rc_ch,
+                            content=f"🎲 <@{sess['id']}> rolled **{rolled}** (1–{upper})!",
+                            kind="send_message",
+                            extra={"server_id": sid},
+                        )
+                        if not ok:
+                            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+                    ok = queue_outbox({
+                        "type": "run_command",
+                        "command": rc_name,
+                        "server_id": sid,
+                        "channel_id": rc_ch,
+                        "args": rc_args,
+                        "user_id": sess["id"],
+                        "username": sess["username"],
+                    })
+                    if not ok:
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote('Could not queue command.')}")
+                    return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+
                 enabled = set(data.get("enabled_cmds", []))
                 cur["disabled_cmds"] = [k for k, _, _, _ in ALL_COMMANDS if k not in enabled]
+                cur["announce_ping"] = data.get("announce_ping", [""])[0].strip()
+                w_col = data.get("announce_color", ["#ff7a00"])[0].strip()
+                cur["announce_color"] = w_col if re.match(r"^#[0-9a-fA-F]{6}$", w_col) else "#ff7a00"
+                cur["announce_default_title"] = data.get("announce_default_title", ["Announcement"])[0].strip() or "Announcement"
+                cur["announce_footer"] = data.get("announce_footer", [""])[0].strip()
                 all_cfg[sid] = cur
                 save_all_cfg(all_cfg, sid)
                 return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&saved=1")
