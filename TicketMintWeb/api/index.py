@@ -20,6 +20,7 @@ ALL_COMMANDS = [
     ("ticketclose", "/ticketclose", "Close and log an active ticket"),
     ("modroles", "/modroles", "Add, remove, or view staff roles"),
     ("setwelcomechannel", "/setwelcomechannel", "Set the automatic welcome channel"),
+    ("verifypanel", "/verifypanel", "Post a 1-click member verification panel"),
     ("announce", "/announce", "Post styled announcements in chat"),
     ("warn", "/warn", "Issue an official staff warning to a user"),
     ("clear", "/clear", "Bulk delete recent messages in a channel"),
@@ -101,7 +102,7 @@ def y_api(method, path, body=None, bearer=None, base_url=None):
     hdrs = {
         "Authorization": f"Bearer {bearer or BOT_TOKEN}",
         "Content-Type": "application/json",
-        "User-Agent": "TicketMintWeb/2.0",
+        "User-Agent": "TicketMintWeb/2.1",
     }
     data = json.dumps(body).encode("utf-8") if body is not None else None
     root = (base_url or API_BASE).rstrip("/")
@@ -330,6 +331,9 @@ def get_scfg(sid):
     return {
         "roles": raw.get("roles", []),
         "autorole": raw.get("autorole", ""),
+        "verify_role": raw.get("verify_role", ""),
+        "verify_channel": raw.get("verify_channel", ""),
+        "active_preset": raw.get("active_preset", ""),
         "dash": raw.get("dash", ""),
         "cat": raw.get("cat", ""),
         "logs": raw.get("logs", ""),
@@ -343,6 +347,7 @@ def get_scfg(sid):
         "g_msg": raw.get("g_msg", "{user} just left {server}. We now have {member_count} members."),
         "disabled_cmds": disabled if isinstance(disabled, list) else [],
         "anti_link": bool(raw.get("anti_link", True)),
+        "anti_caps": bool(raw.get("anti_caps", False)),
         "word_filter": bool(raw.get("word_filter", True)),
         "anti_spam": bool(raw.get("anti_spam", True)),
         "max_tickets": int(raw.get("max_tickets", 2) or 2),
@@ -392,7 +397,25 @@ def post_panel(cid):
     return True, ("" if queued else "Outbox queue unavailable")
 
 
-# Smooth GPU-friendly animations (transform + background-color only)
+def post_verify_panel(cid, sname="Server"):
+    bname = u_dict(safe_y("GET", "/me"), "bot").get("name", "TicketMint")
+    payload = {
+        "embeds": [{
+            "title": f"Verify in {sname}",
+            "description": "Click **Verify** below to confirm you're a real member and unlock the server.",
+            "color": 0xFF7A00,
+            "footer": {"text": f"{bname} • Member Verification"},
+        }],
+        "components": [{
+            "type": 1,
+            "components": [{"type": 2, "style": 1, "label": "Verify", "custom_id": "verify:claim"}],
+        }],
+    }
+    post_raw_message(cid, payload)
+    queued = queue_outbox({"type": "verify_panel", "channel_id": str(cid), "server_name": sname})
+    return True, ("" if queued else "Outbox queue unavailable")
+
+
 CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#0b0d12;color:#f3f4f6;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;min-height:100vh;display:flex;flex-direction:column}
@@ -402,7 +425,7 @@ a{text-decoration:none;color:inherit}
 .brand:hover{transform:translateY(-1px)}
 .badge{background:#ff7a00;color:#000;padding:3px 8px;border-radius:6px;font-weight:900;font-size:13px}
 .nav-links{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.btn{padding:9px 15px;border-radius:8px;font-weight:700;font-size:13px;cursor:pointer;border:none;display:inline-flex;align-items:center;gap:6px;transition:transform .12s ease,background-color .14s ease,border-color .14s ease}
+.btn{padding:9px 15px;border-radius:8px;font-weight:700;font-size:13px;cursor:pointer;border:none;display:inline-flex;align-items:center;gap:6px;transition:transform .11s ease,background-color .12s ease,border-color .12s ease}
 .btn:hover{transform:translateY(-1px)}
 .btn:active{transform:translateY(1px) scale(.98)}
 .btn-orange{background:#ff7a00;color:#000}
@@ -415,9 +438,9 @@ a{text-decoration:none;color:inherit}
 .hero p{color:#9ca3af;font-size:16px;max-width:560px;margin:0 auto 24px;line-height:1.5}
 .hero-btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;max-width:940px;margin:28px auto;padding:0 18px}
-.card{background:#12151e;border:1px solid #1f2432;border-radius:12px;padding:18px;transition:transform .14s ease,border-color .14s ease}
+.card{background:#12151e;border:1px solid #1f2432;border-radius:12px;padding:18px;transition:transform .13s ease,border-color .13s ease}
 .card:hover{transform:translateY(-2px);border-color:#ff7a00}
-.srv-row{display:flex;align-items:center;justify-content:space-between;background:#12151e;border:1px solid #1f2432;border-radius:12px;padding:15px 18px;margin-bottom:10px;transition:transform .12s ease,border-color .14s ease,background-color .14s ease}
+.srv-row{display:flex;align-items:center;justify-content:space-between;background:#12151e;border:1px solid #1f2432;border-radius:12px;padding:15px 18px;margin-bottom:10px;transition:transform .11s ease,border-color .13s ease,background-color .13s ease}
 .srv-row:hover{transform:translateX(3px);border-color:#ff7a00;background:#161a26}
 .srv-row:active{transform:scale(.99)}
 .srv-left{display:flex;align-items:center;gap:14px}
@@ -427,29 +450,32 @@ a{text-decoration:none;color:inherit}
 .layout{display:grid;grid-template-columns:215px 1fr;gap:18px}
 @media(max-width:740px){.layout{grid-template-columns:1fr}}
 .side{background:#12151e;border:1px solid #1f2432;border-radius:12px;padding:10px;height:fit-content}
-.side a,.side button.side-btn{display:block;width:100%;text-align:left;background:transparent;border:none;font-family:inherit;cursor:pointer;padding:10px 12px;border-radius:8px;color:#9ca3af;font-weight:600;margin-bottom:3px;font-size:13px;transition:transform .12s ease,background-color .14s ease,color .14s ease}
-.side a:hover,.side button.side-btn:hover{color:#fff;background:#181c28;transform:translateX(2px)}
-.side a:active,.side button.side-btn:active{transform:scale(.98)}
-.side a.act{background:#ff7a0022;color:#ff7a00;border-left:3px solid #ff7a00}
+.side button.tab-btn,.side button.side-btn{display:block;width:100%;text-align:left;background:transparent;border:none;font-family:inherit;cursor:pointer;padding:10px 12px;border-radius:8px;color:#9ca3af;font-weight:600;margin-bottom:3px;font-size:13px;transition:transform .1s ease,background-color .1s ease,color .1s ease}
+.side button.tab-btn:hover,.side button.side-btn:hover{color:#fff;background:#181c28;transform:translateX(2px)}
+.side button.tab-btn:active,.side button.side-btn:active{transform:scale(.98)}
+.side button.tab-btn.act{background:#ff7a0022;color:#ff7a00;border-left:3px solid #ff7a00}
 .side hr{border:none;border-top:1px solid #1c202b;margin:7px 0}
 .panel{background:#12151e;border:1px solid #1f2432;border-radius:12px;padding:20px}
+.tab-pane{display:none}
+.tab-pane.act{display:block}
 .field{padding:15px 0;border-bottom:1px solid #1c202b}
 .field:last-child{border-bottom:none}
 .field label{display:block;font-weight:700;margin-bottom:4px;font-size:14px}
 .field small{display:block;color:#9ca3af;margin-bottom:8px;font-size:12px}
-select,input[type=text],input[type=number],textarea{width:100%;padding:10px 11px;border-radius:8px;background:#0b0d12;color:#fff;border:1px solid #2a3040;font-size:13px;font-family:inherit;transition:border-color .14s ease}
+select,input[type=text],input[type=number],textarea{width:100%;padding:10px 11px;border-radius:8px;background:#0b0d12;color:#fff;border:1px solid #2a3040;font-size:13px;font-family:inherit;transition:border-color .12s ease}
 select:focus,input:focus,textarea:focus{outline:none;border-color:#ff7a00}
 textarea{min-height:96px;resize:vertical}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 @media(max-width:600px){.row2{grid-template-columns:1fr}}
 .pills{display:flex;flex-wrap:wrap;gap:7px}
 .pill input{display:none}
-.pill span{display:inline-block;padding:6px 12px;border-radius:999px;background:#0b0d12;border:1px solid #2a3040;font-size:12px;font-weight:600;cursor:pointer;color:#cbd5e1;transition:transform .11s ease,background-color .14s ease,border-color .14s ease}
+.pill span{display:inline-block;padding:6px 12px;border-radius:999px;background:#0b0d12;border:1px solid #2a3040;font-size:12px;font-weight:600;cursor:pointer;color:#cbd5e1;transition:transform .1s ease,background-color .12s ease,border-color .12s ease}
 .pill span:hover{transform:translateY(-1px);border-color:#ff7a00}
 .pill span:active{transform:scale(.96)}
 .pill input:checked+span{background:#ff7a00;color:#000;border-color:#ff7a00}
-.cmd-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 12px;border-radius:9px;background:#0b0d12;border:1px solid #1f2432;margin-bottom:8px;transition:border-color .14s ease}
+.cmd-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 12px;border-radius:9px;background:#0b0d12;border:1px solid #1f2432;margin-bottom:8px;transition:border-color .12s ease}
 .cmd-row:hover{border-color:#2e364a}
+.cmd-row.active-preset{border-color:#ff7a00}
 .chk-line{display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:600;font-size:13px}
 .chk-line input{width:16px;height:16px;accent-color:#ff7a00}
 .preview-box{background:#0b0d12;border:1px solid #242a3a;border-left:4px solid #ff7a00;border-radius:9px;padding:12px 14px;margin-top:8px}
@@ -458,10 +484,27 @@ textarea{min-height:96px;resize:vertical}
 .stat-box{background:#0b0d12;border:1px solid #1f2432;border-radius:9px;padding:11px}
 .stat-num{font-size:20px;font-weight:900;color:#ff7a00}
 .stat-lbl{font-size:11px;color:#9ca3af;margin-top:2px}
+.active-pill{background:#ff7a0026;color:#ff7a00;border:1px solid #ff7a00;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:800;margin-left:6px}
 """
 
-TINY_JS = """
+INSTANT_JS = """
 <script>
+function tmSwitchTab(tabName){
+  var panes=document.querySelectorAll('.tab-pane');
+  var btns=document.querySelectorAll('.tab-btn');
+  for(var i=0;i<panes.length;i++){
+    panes[i].classList.toggle('act',panes[i].getAttribute('data-pane')===tabName);
+  }
+  for(var j=0;j<btns.length;j++){
+    btns[j].classList.toggle('act',btns[j].getAttribute('data-tab')===tabName);
+  }
+  document.querySelectorAll('form input[name="tab"]').forEach(function(inp){inp.value=tabName;});
+  try{
+    var url=new URL(window.location.href);
+    url.searchParams.set('tab',tabName);
+    window.history.replaceState({},'',url.toString());
+  }catch(e){}
+}
 document.addEventListener('submit',function(e){
   var f=e.target;
   if(!f||f.tagName!=='FORM')return;
@@ -487,7 +530,7 @@ def page(title, body, user=None):
         f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<title>{esc(title)}</title><style>{CSS}</style></head><body>"
         f"<div class='nav'><a href='/' class='brand'><span class='badge'>TM</span> TicketMint</a><div class='nav-links'>{right}</div></div>"
-        f"{body}{TINY_JS}</body></html>"
+        f"{body}{INSTANT_JS}</body></html>"
     )
 
 
@@ -573,7 +616,7 @@ class handler(BaseHTTPRequestHandler):
                             "code": code,
                             "redirect_uri": REDIR_URI,
                         }).encode("utf-8"),
-                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/2.0"},
+                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/2.1"},
                     ),
                     (
                         json.dumps({
@@ -583,7 +626,7 @@ class handler(BaseHTTPRequestHandler):
                             "code": code,
                             "redirect_uri": REDIR_URI,
                         }).encode("utf-8"),
-                        {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/2.0"},
+                        {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/2.1"},
                     ),
                 ]
                 for b_data, hdrs in attempts:
@@ -603,7 +646,7 @@ class handler(BaseHTTPRequestHandler):
                         try:
                             me_req = urllib.request.Request(
                                 f"https://{Y_HOST}{ep}",
-                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/2.0"},
+                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/2.1"},
                             )
                             cand = json.loads(urllib.request.urlopen(me_req, timeout=6).read().decode("utf-8"))
                             if isinstance(cand, dict):
@@ -701,7 +744,8 @@ class handler(BaseHTTPRequestHandler):
             m_count = fetched.get("member_count") or srv_obj.get("member_count") or 5
             sc = get_scfg(sel_id)
             tab = qs.get("tab", ["tickets"])[0].strip().lower()
-            if tab not in ("tickets", "welcome", "announce", "automod", "commands", "presets"):
+            valid_tabs = ("tickets", "welcome", "announce", "automod", "verification", "commands", "presets")
+            if tab not in valid_tabs:
                 tab = "tickets"
 
             roles = meta.get("roles", [])
@@ -741,140 +785,174 @@ class handler(BaseHTTPRequestHandler):
             )
 
             non_everyone_roles = [r for r in roles if r.get("name") != "@everyone"]
+            pills = "".join(
+                f"<label class='pill'><input type='checkbox' name='roles' value='{esc(r['id'])}' {'checked' if r['id'] in sc['roles'] else ''}><span>{esc(r.get('name', 'Role'))}</span></label>"
+                for r in non_everyone_roles
+            ) or "<span style='color:#9ca3af;font-size:12px'>Click Sync Channels &amp; Roles if roles don't appear yet.</span>"
+            cho = ch_opts(txt_chs, sc["dash"], "-- Select Ticket Panel Channel --", "#")
+            cao = ch_opts(cat_chs, sc["cat"], "None (Optional)", "")
+            lgo = ch_opts(txt_chs, sc["logs"], "None (Optional)", "#")
+            tickets_pane = (
+                f"<div class='tab-pane {'act' if tab=='tickets' else ''}' data-pane='tickets'>{stats_bar}"
+                f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
+                f"<div class='field'><label>Admin / Mod Roles ({len(sc['roles'])} selected)</label><small>Members with these roles can view, claim, and close private tickets.</small><div class='pills'>{pills}</div></div>"
+                f"<div class='field'><label>Ticket Panel Channel</label><small>Channel where the Open a Ticket dashboard gets posted.</small><select name='dash'>{cho}</select></div>"
+                f"<div class='field'><label>Ticket Category (Optional)</label><small>Category where new private ticket rooms are placed.</small><select name='cat'>{cao}</select></div>"
+                f"<div class='field'><label>Ticket Logs &amp; Transcripts Channel (Optional)</label><small>Receives open/close logs and ticket transcripts.</small><select name='logs'>{lgo}</select></div>"
+                f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'>"
+                f"<button type='submit' name='act' value='save' class='btn btn-orange'>Save Changes</button>"
+                f"<button type='submit' name='act' value='post' class='btn btn-dark'>Save &amp; Post Ticket Panel</button>"
+                f"<button type='submit' name='act' value='modping' class='btn btn-dark'>Send Staff Ping</button></div></form></div>"
+            )
 
-            if tab == "tickets":
-                pills = "".join(
-                    f"<label class='pill'><input type='checkbox' name='roles' value='{esc(r['id'])}' {'checked' if r['id'] in sc['roles'] else ''}><span>{esc(r.get('name', 'Role'))}</span></label>"
-                    for r in non_everyone_roles
-                ) or "<span style='color:#9ca3af;font-size:12px'>Click Sync Channels &amp; Roles if roles don't appear yet.</span>"
-                cho = ch_opts(txt_chs, sc["dash"], "-- Select Ticket Panel Channel --", "#")
-                cao = ch_opts(cat_chs, sc["cat"], "None (Optional)", "")
-                lgo = ch_opts(txt_chs, sc["logs"], "None (Optional)", "#")
-                panel_html = (
-                    f"{stats_bar}"
-                    f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='tickets'>"
-                    f"<div class='field'><label>Admin / Mod Roles</label><small>Members with these roles can view, claim, and close private tickets.</small><div class='pills'>{pills}</div></div>"
-                    f"<div class='field'><label>Ticket Panel Channel</label><small>Channel where the Open a Ticket dashboard gets posted.</small><select name='dash'>{cho}</select></div>"
-                    f"<div class='field'><label>Ticket Category (Optional)</label><small>Category where new private ticket rooms are placed.</small><select name='cat'>{cao}</select></div>"
-                    f"<div class='field'><label>Ticket Logs &amp; Transcripts Channel (Optional)</label><small>Receives open/close logs and ticket transcripts.</small><select name='logs'>{lgo}</select></div>"
-                    f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'>"
-                    f"<button type='submit' name='act' value='save' class='btn btn-orange'>Save Changes</button>"
-                    f"<button type='submit' name='act' value='post' class='btn btn-dark'>Save &amp; Post Ticket Panel</button>"
-                    f"<button type='submit' name='act' value='modping' class='btn btn-dark'>Send Staff Ping</button></div></form>"
-                )
-            elif tab == "welcome":
-                w_cho = ch_opts(txt_chs, sc["welcome"], "Disabled (No Welcome Channel)", "#")
-                g_cho = ch_opts(txt_chs, sc["goodbye"], "Disabled (No Goodbye Channel)", "#")
-                ar_cho = ch_opts(non_everyone_roles, sc["autorole"], "Disabled (No Auto-Role)", "@")
-                prev_col = sc["w_color"] if str(sc["w_color"]).startswith("#") else "#ff7a00"
-                prev_txt = (
-                    esc(sc["w_msg"])
-                    .replace("{user}", f"@{esc(sess['username'])}")
-                    .replace("{server}", esc(srv_name))
-                    .replace("{member_count}", str(m_count))
-                    .replace("{ordinal}", ordinal_num(m_count))
-                )
-                banner_prev = f"<img src='{esc(sc['w_banner'])}' loading='lazy' style='width:100%;max-height:140px;object-fit:cover;border-radius:7px;margin-top:8px' alt=''>" if sc["w_banner"] else ""
-                panel_html = (
-                    f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='welcome'>"
-                    f"<div class='field row2'><div><label>Welcome Channel</label><small>Pings new members and posts their welcome message.</small><select name='welcome'>{w_cho}</select></div>"
-                    f"<div><label>Auto-Role on Join (Optional)</label><small>Automatically assign a starter role to new members.</small><select name='autorole'>{ar_cho}</select></div></div>"
-                    f"<div class='field row2'><div><label>Welcome Embed Title</label><small>Heading shown at the top of the welcome card.</small><input type='text' name='w_title' value='{esc(sc['w_title'])}' placeholder='Welcome!'></div>"
-                    f"<div><label>Accent Color (Hex)</label><small>Default TicketMint orange is #ff7a00.</small><input type='text' name='w_color' value='{esc(sc['w_color'])}' placeholder='#ff7a00'></div></div>"
-                    f"<div class='field'><label>Welcome Message</label><small>Supports <b>{{user}}</b> (ping), <b>{{server}}</b>, <b>{{ordinal}}</b> (e.g. 5th), and <b>{{member_count}}</b>.</small><input type='text' name='w_msg' value='{esc(sc['w_msg'])}' placeholder='Welcome {{user}} to {{server}}! You are our {{ordinal}} member!'></div>"
-                    f"<div class='field'><label class='chk-line'><input type='checkbox' name='w_card' value='1' {'checked' if sc['w_card'] else ''}><span>Send generated PNG Welcome Image Card with user's avatar &amp; member #</span></label></div>"
-                    f"<div class='field'><label>Welcome Banner Image URL (Optional)</label><small>Used when PNG Welcome Card mode is unchecked.</small><input type='text' name='w_banner' value='{esc(sc['w_banner'])}' placeholder='https://...'>"
-                    f"<div class='preview-box' style='border-left-color:{esc(prev_col)}'><div style='font-size:10px;color:#9ca3af;margin-bottom:4px'>LIVE PREVIEW</div>"
-                    f"<div style='font-weight:800;font-size:14px;margin-bottom:3px'>{esc(sc['w_title'] or 'Welcome!')}</div>"
-                    f"<div style='color:#cbd5e1;font-size:13px'>{prev_txt}</div>{banner_prev}</div></div>"
-                    f"<div class='field'><label>Goodbye Channel (Optional)</label><small>Channel where goodbye messages are posted when a member leaves.</small><select name='goodbye'>{g_cho}</select></div>"
-                    f"<div class='field'><label>Goodbye Message</label><small>Supports <b>{{user}}</b>, <b>{{server}}</b>, and <b>{{member_count}}</b>.</small><input type='text' name='g_msg' value='{esc(sc['g_msg'])}' placeholder='{{user}} just left {{server}}. We now have {{member_count}} members.'></div>"
-                    f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'>"
-                    f"<button type='submit' name='act' value='save' class='btn btn-orange'>Save Welcome &amp; Goodbye</button>"
-                    f"<button type='submit' name='act' value='test_welcome' class='btn btn-dark'>Send Test Welcome Card</button></div></form>"
-                )
-            elif tab == "announce":
-                ann_cho = ch_opts(txt_chs, sc["dash"], "-- Select Target Channel --", "#")
-                panel_html = (
-                    f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='announce'>"
-                    f"<div class='field'><label>Target Channel</label><small>Choose where TicketMint should post this announcement.</small><select name='ann_channel' required>{ann_cho}</select></div>"
-                    f"<div class='field'><label>Announcement Title</label><small>Displayed as a bold heading.</small><input type='text' name='ann_title' placeholder='Server Update!' required></div>"
-                    f"<div class='field'><label>Announcement Message</label><small>Write your announcement details below.</small><textarea name='ann_body' placeholder='Hey everyone! Here is what is new...' required></textarea></div>"
-                    f"<div class='field'><label class='chk-line'><input type='checkbox' name='ann_everyone' value='1'><span>Ping @everyone above the announcement</span></label></div>"
-                    f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='announce' class='btn btn-orange'>Send Announcement</button></div></form>"
-                )
-            elif tab == "automod":
-                panel_html = (
-                    f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='automod'>"
-                    f"<div class='field'><label>Chat &amp; Ticket Protection</label><small>Blocks repeated-letter &amp; symbol bypasses (e.g. fuuuuck, f.u.c.k) and sends auto-vanishing private warnings.</small>"
-                    f"<div class='cmd-row'><div><div style='font-weight:700;font-size:13px'>Anti-Link Guard</div><div style='color:#9ca3af;font-size:12px;margin-top:2px'>Block external links from non-staff members</div></div>"
-                    f"<label class='pill'><input type='checkbox' name='anti_link' value='1' {'checked' if sc['anti_link'] else ''}><span>Active</span></label></div>"
-                    f"<div class='cmd-row'><div><div style='font-weight:700;font-size:13px'>Smart Word Filter</div><div style='color:#9ca3af;font-size:12px;margin-top:2px'>Catches stretched letters, leetspeak, and custom banned words</div></div>"
-                    f"<label class='pill'><input type='checkbox' name='word_filter' value='1' {'checked' if sc['word_filter'] else ''}><span>Active</span></label></div>"
-                    f"<div class='cmd-row'><div><div style='font-weight:700;font-size:13px'>Anti-Spam Flood Guard</div><div style='color:#9ca3af;font-size:12px;margin-top:2px'>Stops users sending 5+ rapid messages within 6 seconds</div></div>"
-                    f"<label class='pill'><input type='checkbox' name='anti_spam' value='1' {'checked' if sc['anti_spam'] else ''}><span>Active</span></label></div></div>"
-                    f"<div class='field'><label>Banned Words (Comma Separated)</label><small>Leave blank to use default profanity list, or enter custom words: word1, word2</small><input type='text' name='blocked_words' value='{esc(sc['blocked_words'])}' placeholder='word1, word2, word3'></div>"
-                    f"<div class='field row2'><div><label>Banned Word Warning Message</label><small>Sent privately to the user. Use <b>{{user}}</b>.</small><input type='text' name='warn_word_msg' value='{esc(sc['warn_word_msg'])}' placeholder='{{user}}, that word is not allowed here.'></div>"
-                    f"<div><label>Link Warning Message</label><small>Sent privately to the user. Use <b>{{user}}</b>.</small><input type='text' name='warn_link_msg' value='{esc(sc['warn_link_msg'])}' placeholder='{{user}}, links are not allowed in this channel.'></div></div>"
-                    f"<div class='field row2'><div><label>Max Open Tickets Per User</label><small>Prevent users from opening too many rooms at once.</small><input type='number' name='max_tickets' min='1' max='10' value='{esc(sc['max_tickets'])}'></div>"
-                    f"<div><label>Ticket Cooldown (Seconds)</label><small>Wait time between opening tickets (0 = off).</small><input type='number' name='ticket_cooldown' min='0' max='3600' value='{esc(sc['ticket_cooldown'])}'></div></div>"
-                    f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='save' class='btn btn-orange'>Save Protection Rules</button></div></form>"
-                )
-            elif tab == "presets":
-                panel_html = (
-                    f"<div class='field'><label>1-Click Setup Presets</label><small>Apply recommended settings for your community in one click.</small>"
-                    f"<form method='POST' action='/save' class='cmd-row'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='presets'>"
-                    f"<div><div style='font-weight:700;font-size:13px'>Gaming Community</div><div style='color:#9ca3af;font-size:12px'>Balanced anti-link + word filter, welcome cards enabled, 2 max tickets</div></div>"
-                    f"<button type='submit' name='act' value='preset_gaming' class='btn btn-orange'>Apply</button></form>"
-                    f"<form method='POST' action='/save' class='cmd-row'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='presets'>"
-                    f"<div><div style='font-weight:700;font-size:13px'>Strict Safe Chat</div><div style='color:#9ca3af;font-size:12px'>Anti-link + anti-spam + word filter active, 60s ticket cooldown, 1 max ticket</div></div>"
-                    f"<button type='submit' name='act' value='preset_strict' class='btn btn-dark'>Apply</button></form>"
-                    f"<form method='POST' action='/save' class='cmd-row'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='presets'>"
-                    f"<div><div style='font-weight:700;font-size:13px'>Chill / Open Server</div><div style='color:#9ca3af;font-size:12px'>Links allowed, word filter + anti-spam active, fast 15s ticket cooldown</div></div>"
-                    f"<button type='submit' name='act' value='preset_chill' class='btn btn-dark'>Apply</button></form></div>"
-                )
-            else:
-                disabled = set(sc["disabled_cmds"])
-                cmd_items = "".join(
-                    f"<div class='cmd-row'><div><div style='font-weight:700;font-size:13px'>{esc(label)}</div>"
-                    f"<div style='color:#9ca3af;font-size:12px;margin-top:2px'>{esc(desc)}</div></div>"
-                    f"<label class='pill'><input type='checkbox' name='enabled_cmds' value='{esc(key)}' {'checked' if key not in disabled else ''}><span>Enabled</span></label></div>"
-                    for key, label, desc in ALL_COMMANDS
-                )
-                panel_html = (
-                    f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='commands'>"
-                    f"<div class='field'><label>Commands &amp; Tools</label><small>All commands are enabled by default in <b>{esc(srv_name)}</b>. Toggle any off if needed.</small>{cmd_items}</div>"
-                    f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='save' class='btn btn-orange'>Save Command Settings</button></div></form>"
-                )
+            w_cho = ch_opts(txt_chs, sc["welcome"], "Disabled (No Welcome Channel)", "#")
+            g_cho = ch_opts(txt_chs, sc["goodbye"], "Disabled (No Goodbye Channel)", "#")
+            ar_cho = ch_opts(non_everyone_roles, sc["autorole"], "Disabled (No Auto-Role)", "@")
+            prev_col = sc["w_color"] if str(sc["w_color"]).startswith("#") else "#ff7a00"
+            prev_txt = (
+                esc(sc["w_msg"])
+                .replace("{user}", f"@{esc(sess['username'])}")
+                .replace("{server}", esc(srv_name))
+                .replace("{member_count}", str(m_count))
+                .replace("{ordinal}", ordinal_num(m_count))
+            )
+            banner_prev = f"<img src='{esc(sc['w_banner'])}' loading='lazy' style='width:100%;max-height:140px;object-fit:cover;border-radius:7px;margin-top:8px' alt=''>" if sc["w_banner"] else ""
+            welcome_pane = (
+                f"<div class='tab-pane {'act' if tab=='welcome' else ''}' data-pane='welcome'>"
+                f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
+                f"<div class='field row2'><div><label>Welcome Channel</label><small>Pings new members and posts their welcome message.</small><select name='welcome'>{w_cho}</select></div>"
+                f"<div><label>Auto-Role on Join (Optional)</label><small>Automatically assign a starter role to new members.</small><select name='autorole'>{ar_cho}</select></div></div>"
+                f"<div class='field row2'><div><label>Welcome Embed Title</label><small>Heading shown at the top of the welcome card.</small><input type='text' name='w_title' value='{esc(sc['w_title'])}' placeholder='Welcome!'></div>"
+                f"<div><label>Accent Color (Hex)</label><small>Default TicketMint orange is #ff7a00.</small><input type='text' name='w_color' value='{esc(sc['w_color'])}' placeholder='#ff7a00'></div></div>"
+                f"<div class='field'><label>Welcome Message</label><small>Supports <b>{{user}}</b> (ping), <b>{{server}}</b>, <b>{{ordinal}}</b> (e.g. 5th), and <b>{{member_count}}</b>.</small><input type='text' name='w_msg' value='{esc(sc['w_msg'])}' placeholder='Welcome {{user}} to {{server}}! You are our {{ordinal}} member!'></div>"
+                f"<div class='field'><label class='chk-line'><input type='checkbox' name='w_card' value='1' {'checked' if sc['w_card'] else ''}><span>Send generated PNG Welcome Image Card with user's avatar &amp; member #</span></label></div>"
+                f"<div class='field'><label>Welcome Banner Image URL (Optional)</label><small>Used when PNG Welcome Card mode is unchecked.</small><input type='text' name='w_banner' value='{esc(sc['w_banner'])}' placeholder='https://...'>"
+                f"<div class='preview-box' style='border-left-color:{esc(prev_col)}'><div style='font-size:10px;color:#9ca3af;margin-bottom:4px'>LIVE PREVIEW</div>"
+                f"<div style='font-weight:800;font-size:14px;margin-bottom:3px'>{esc(sc['w_title'] or 'Welcome!')}</div>"
+                f"<div style='color:#cbd5e1;font-size:13px'>{prev_txt}</div>{banner_prev}</div></div>"
+                f"<div class='field'><label>Goodbye Channel (Optional)</label><small>Channel where goodbye messages are posted when a member leaves.</small><select name='goodbye'>{g_cho}</select></div>"
+                f"<div class='field'><label>Goodbye Message</label><small>Supports <b>{{user}}</b>, <b>{{server}}</b>, and <b>{{member_count}}</b>.</small><input type='text' name='g_msg' value='{esc(sc['g_msg'])}' placeholder='{{user}} just left {{server}}. We now have {{member_count}} members.'></div>"
+                f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'>"
+                f"<button type='submit' name='act' value='save' class='btn btn-orange'>Save Welcome &amp; Goodbye</button>"
+                f"<button type='submit' name='act' value='test_welcome' class='btn btn-dark'>Send Test Welcome Card</button></div></form></div>"
+            )
 
+            ann_cho = ch_opts(txt_chs, sc["dash"], "-- Select Target Channel --", "#")
+            announce_pane = (
+                f"<div class='tab-pane {'act' if tab=='announce' else ''}' data-pane='announce'>"
+                f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
+                f"<div class='field'><label>Target Channel</label><small>Choose where TicketMint should post this announcement.</small><select name='ann_channel' required>{ann_cho}</select></div>"
+                f"<div class='field'><label>Announcement Title</label><small>Displayed as a bold heading.</small><input type='text' name='ann_title' placeholder='Server Update!' required></div>"
+                f"<div class='field'><label>Announcement Message</label><small>Write your announcement details below.</small><textarea name='ann_body' placeholder='Hey everyone! Here is what is new...' required></textarea></div>"
+                f"<div class='field'><label class='chk-line'><input type='checkbox' name='ann_everyone' value='1'><span>Ping @everyone above the announcement</span></label></div>"
+                f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='announce' class='btn btn-orange'>Send Announcement</button></div></form></div>"
+            )
+
+            automod_pane = (
+                f"<div class='tab-pane {'act' if tab=='automod' else ''}' data-pane='automod'>"
+                f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
+                f"<div class='field'><label>Chat &amp; Ticket Protection</label><small>Simple, effective protection against spam, links, caps, and bad words.</small>"
+                f"<div class='cmd-row'><div><div style='font-weight:700;font-size:13px'>Anti-Link Guard</div><div style='color:#9ca3af;font-size:12px;margin-top:2px'>Block external links from non-staff members</div></div>"
+                f"<label class='pill'><input type='checkbox' name='anti_link' value='1' {'checked' if sc['anti_link'] else ''}><span>Active</span></label></div>"
+                f"<div class='cmd-row'><div><div style='font-weight:700;font-size:13px'>Smart Word Filter</div><div style='color:#9ca3af;font-size:12px;margin-top:2px'>Catches stretched letters, leetspeak, and custom banned words</div></div>"
+                f"<label class='pill'><input type='checkbox' name='word_filter' value='1' {'checked' if sc['word_filter'] else ''}><span>Active</span></label></div>"
+                f"<div class='cmd-row'><div><div style='font-weight:700;font-size:13px'>Anti-Spam Flood Guard</div><div style='color:#9ca3af;font-size:12px;margin-top:2px'>Stops users sending 5+ rapid messages within 6 seconds</div></div>"
+                f"<label class='pill'><input type='checkbox' name='anti_spam' value='1' {'checked' if sc['anti_spam'] else ''}><span>Active</span></label></div>"
+                f"<div class='cmd-row'><div><div style='font-weight:700;font-size:13px'>Excessive Caps Guard</div><div style='color:#9ca3af;font-size:12px;margin-top:2px'>Cleans up long ALL-CAPS messages</div></div>"
+                f"<label class='pill'><input type='checkbox' name='anti_caps' value='1' {'checked' if sc['anti_caps'] else ''}><span>Active</span></label></div></div>"
+                f"<div class='field'><label>Banned Words (Comma Separated)</label><small>Leave blank for default filter, or add custom words: word1, word2</small><input type='text' name='blocked_words' value='{esc(sc['blocked_words'])}' placeholder='word1, word2, word3'></div>"
+                f"<div class='field row2'><div><label>Banned Word Warning Message</label><small>Sent to the user. Use <b>{{user}}</b>.</small><input type='text' name='warn_word_msg' value='{esc(sc['warn_word_msg'])}' placeholder='{{user}}, that word is not allowed here.'></div>"
+                f"<div><label>Link Warning Message</label><small>Sent to the user. Use <b>{{user}}</b>.</small><input type='text' name='warn_link_msg' value='{esc(sc['warn_link_msg'])}' placeholder='{{user}}, links are not allowed in this channel.'></div></div>"
+                f"<div class='field row2'><div><label>Max Open Tickets Per User</label><small>Prevent users from opening too many rooms at once.</small><input type='number' name='max_tickets' min='1' max='10' value='{esc(sc['max_tickets'])}'></div>"
+                f"<div><label>Ticket Cooldown (Seconds)</label><small>Wait time between opening tickets (0 = off).</small><input type='number' name='ticket_cooldown' min='0' max='3600' value='{esc(sc['ticket_cooldown'])}'></div></div>"
+                f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='save' class='btn btn-orange'>Save Protection Rules</button></div></form></div>"
+            )
+
+            vr_cho = ch_opts(non_everyone_roles, sc["verify_role"], "Disabled (No Verified Role)", "@")
+            vc_cho = ch_opts(txt_chs, sc["verify_channel"], "-- Select Verification Channel --", "#")
+            verify_pane = (
+                f"<div class='tab-pane {'act' if tab=='verification' else ''}' data-pane='verification'>"
+                f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
+                f"<div class='field row2'><div><label>Verified Role</label><small>Role given when a member clicks Verify.</small><select name='verify_role'>{vr_cho}</select></div>"
+                f"<div><label>Verification Channel</label><small>Channel where the Verify button panel is posted.</small><select name='verify_channel'>{vc_cho}</select></div></div>"
+                f"<div class='preview-box'><div style='font-size:10px;color:#9ca3af;margin-bottom:4px'>PANEL PREVIEW</div>"
+                f"<div style='font-weight:800;font-size:14px;margin-bottom:4px'>Verify in {esc(srv_name)}</div>"
+                f"<div style='color:#cbd5e1;font-size:13px;margin-bottom:10px'>Click Verify to unlock member channels.</div>"
+                f"<span class='btn btn-orange' style='pointer-events:none'>Verify</span></div>"
+                f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'>"
+                f"<button type='submit' name='act' value='save' class='btn btn-orange'>Save Verification</button>"
+                f"<button type='submit' name='act' value='post_verify' class='btn btn-dark'>Save &amp; Post Verify Panel</button></div></form></div>"
+            )
+
+            ap = sc.get("active_preset", "")
+            def p_badge(code):
+                return "<span class='active-pill'>ACTIVE</span>" if ap == code else ""
+            def p_btn_cls(code):
+                return "btn-orange" if ap == code else "btn-dark"
+            presets_pane = (
+                f"<div class='tab-pane {'act' if tab=='presets' else ''}' data-pane='presets'>"
+                f"<div class='field'><label>1-Click Setup Presets</label><small>Apply recommended settings for your community in one click.</small>"
+                f"<form method='POST' action='/save' class='cmd-row {'active-preset' if ap=='preset_gaming' else ''}'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
+                f"<div><div style='font-weight:700;font-size:13px'>Gaming Community{p_badge('preset_gaming')}</div><div style='color:#9ca3af;font-size:12px'>Balanced anti-link + word filter, welcome cards enabled, 2 max tickets</div></div>"
+                f"<button type='submit' name='act' value='preset_gaming' class='btn {p_btn_cls('preset_gaming')}'>{'Applied' if ap=='preset_gaming' else 'Apply'}</button></form>"
+                f"<form method='POST' action='/save' class='cmd-row {'active-preset' if ap=='preset_strict' else ''}'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
+                f"<div><div style='font-weight:700;font-size:13px'>Strict Safe Chat{p_badge('preset_strict')}</div><div style='color:#9ca3af;font-size:12px'>Anti-link + anti-spam + word filter active, 60s ticket cooldown, 1 max ticket</div></div>"
+                f"<button type='submit' name='act' value='preset_strict' class='btn {p_btn_cls('preset_strict')}'>{'Applied' if ap=='preset_strict' else 'Apply'}</button></form>"
+                f"<form method='POST' action='/save' class='cmd-row {'active-preset' if ap=='preset_chill' else ''}'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
+                f"<div><div style='font-weight:700;font-size:13px'>Chill / Open Server{p_badge('preset_chill')}</div><div style='color:#9ca3af;font-size:12px'>Links allowed, word filter + anti-spam active, fast 15s ticket cooldown</div></div>"
+                f"<button type='submit' name='act' value='preset_chill' class='btn {p_btn_cls('preset_chill')}'>{'Applied' if ap=='preset_chill' else 'Apply'}</button></form></div></div>"
+            )
+
+            disabled = set(sc["disabled_cmds"])
+            cmd_items = "".join(
+                f"<div class='cmd-row'><div><div style='font-weight:700;font-size:13px'>{esc(label)}</div>"
+                f"<div style='color:#9ca3af;font-size:12px;margin-top:2px'>{esc(desc)}</div></div>"
+                f"<label class='pill'><input type='checkbox' name='enabled_cmds' value='{esc(key)}' {'checked' if key not in disabled else ''}><span>Enabled</span></label></div>"
+                for key, label, desc in ALL_COMMANDS
+            )
+            commands_pane = (
+                f"<div class='tab-pane {'act' if tab=='commands' else ''}' data-pane='commands'>"
+                f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
+                f"<div class='field'><label>Commands &amp; Tools</label><small>All commands are enabled by default in <b>{esc(srv_name)}</b>. Toggle any off if needed.</small>{cmd_items}</div>"
+                f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='save' class='btn btn-orange'>Save Command Settings</button></div></form></div>"
+            )
+
+            tab_defs = [
+                ("tickets", "Tickets & Roles"),
+                ("welcome", "Welcome & Goodbye"),
+                ("announce", "Announcements"),
+                ("automod", "Auto-Mod & Limits"),
+                ("verification", "Verification"),
+                ("commands", "Commands & Tools"),
+                ("presets", "1-Click Presets"),
+            ]
+            side_btns = "".join(
+                f"<button type='button' data-tab='{t_key}' onclick=\"tmSwitchTab('{t_key}')\" class='tab-btn {'act' if tab==t_key else ''}'>{esc(t_lbl)}</button>"
+                for t_key, t_lbl in tab_defs
+            )
             side_links = (
-                f"<a href='/dashboard?server={esc(sel_id)}&tab=tickets' class='{'act' if tab=='tickets' else ''}'>Tickets &amp; Roles</a>"
-                f"<a href='/dashboard?server={esc(sel_id)}&tab=welcome' class='{'act' if tab=='welcome' else ''}'>Welcome &amp; Goodbye</a>"
-                f"<a href='/dashboard?server={esc(sel_id)}&tab=announce' class='{'act' if tab=='announce' else ''}'>Announcements</a>"
-                f"<a href='/dashboard?server={esc(sel_id)}&tab=automod' class='{'act' if tab=='automod' else ''}'>Auto-Mod &amp; Limits</a>"
-                f"<a href='/dashboard?server={esc(sel_id)}&tab=commands' class='{'act' if tab=='commands' else ''}'>Commands &amp; Tools</a>"
-                f"<a href='/dashboard?server={esc(sel_id)}&tab=presets' class='{'act' if tab=='presets' else ''}'>1-Click Presets</a>"
+                f"{side_btns}"
                 f"<hr><form method='POST' action='/sync' style='margin:0'>"
                 f"<input type='hidden' name='server' value='{esc(sel_id)}'>"
                 f"<input type='hidden' name='tab' value='{esc(tab)}'>"
                 f"<button type='submit' class='side-btn'>Sync Channels &amp; Roles</button></form>"
-                f"<a href='/dashboard'>Switch Server</a>"
+                f"<button type='button' onclick=\"window.location.href='/dashboard'\" class='side-btn'>Switch Server</button>"
             )
             html_out = (
                 f"<div class='wrap'><a href='/dashboard' style='color:#9ca3af;font-size:12px'>&larr; Back to Servers</a>"
                 f"<h1 style='margin:6px 0 18px;font-size:26px'>{esc(srv_name)}</h1><div class='layout'><div class='side'>{side_links}</div>"
-                f"<div class='panel'>{notice}{panel_html}</div></div></div>"
+                f"<div class='panel'>{notice}{tickets_pane}{welcome_pane}{announce_pane}{automod_pane}{verification_pane}{commands_pane}{presets_pane}</div></div></div>"
             )
             return self.send_html(page(f"{srv_name} - TicketMint", html_out, sess))
 
         cta = "Go to Dashboard" if sess else "Authorize & Open Dashboard"
         home = (
             f"<div class='hero'><h1>Yapin's fastest <span>ticket, mod &amp; community</span> bot.</h1>"
-            f"<p>Private support tickets with transcripts, smart anti-bypass auto-mod, welcome cards, and a lightweight 24/7 dashboard built for every PC and phone.</p>"
+            f"<p>Private support tickets with transcripts, smart anti-bypass auto-mod, welcome cards, and an instant zero-wait dashboard.</p>"
             f"<div class='hero-btns'><a href='/dashboard' class='btn btn-orange'>{cta}</a><a href='{INVITE_URL}' class='btn btn-dark'>+ Invite Bot to Server</a></div></div>"
             f"<div class='grid'><div class='card'><h3 style='color:#ff7a00;margin-bottom:6px;font-size:16px'>Tickets &amp; Transcripts</h3><p style='color:#9ca3af;font-size:13px'>Auto-locked private rooms with claim/close buttons and automatic transcript logs.</p></div>"
-            f"<div class='card'><h3 style='color:#ff7a00;margin-bottom:6px;font-size:16px'>Anti-Bypass Auto-Mod</h3><p style='color:#9ca3af;font-size:13px'>Blocks stretched words, leetspeak, links, and flood spam with private self-deleting warnings.</p></div>"
-            f"<div class='card'><h3 style='color:#ff7a00;margin-bottom:6px;font-size:16px'>Zero-Lag Web Control</h3><p style='color:#9ca3af;font-size:13px'>Ultra-fast dashboard with welcome image cards, auto-roles, announcements, and 1-click presets.</p></div></div>"
+            f"<div class='card'><h3 style='color:#ff7a00;margin-bottom:6px;font-size:16px'>Anti-Bypass Auto-Mod</h3><p style='color:#9ca3af;font-size:13px'>Blocks stretched words, leetspeak, links, caps, and spam with quick warnings.</p></div>"
+            f"<div class='card'><h3 style='color:#ff7a00;margin-bottom:6px;font-size:16px'>Instant Web Control</h3><p style='color:#9ca3af;font-size:13px'>Instant tab switching, welcome cards, verification, announcements, and 1-click presets.</p></div></div>"
         )
         return self.send_html(page("TicketMint - Yapin' Bot", home, sess))
 
@@ -887,7 +965,7 @@ class handler(BaseHTTPRequestHandler):
         path = u.path
         sid = data.get("server", [""])[0].strip()
         tab = data.get("tab", ["tickets"])[0].strip().lower()
-        if tab not in ("tickets", "welcome", "announce", "automod", "commands", "presets"):
+        if tab not in ("tickets", "welcome", "announce", "automod", "verification", "commands", "presets"):
             tab = "tickets"
         act = data.get("act", ["save"])[0].strip().lower()
 
@@ -989,6 +1067,7 @@ class handler(BaseHTTPRequestHandler):
                 return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=announce&sent=1")
             if tab == "automod":
                 cur["anti_link"] = bool(data.get("anti_link"))
+                cur["anti_caps"] = bool(data.get("anti_caps"))
                 cur["word_filter"] = bool(data.get("word_filter"))
                 cur["anti_spam"] = bool(data.get("anti_spam"))
                 try:
@@ -1005,13 +1084,28 @@ class handler(BaseHTTPRequestHandler):
                 all_cfg[sid] = cur
                 save_all_cfg(all_cfg, sid)
                 return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=automod&saved=1")
+            if tab == "verification":
+                cur["verify_role"] = data.get("verify_role", [""])[0].strip()
+                cur["verify_channel"] = data.get("verify_channel", [""])[0].strip()
+                all_cfg[sid] = cur
+                save_all_cfg(all_cfg, sid)
+                if act == "post_verify":
+                    if not cur["verify_channel"]:
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=verification&err={urllib.parse.quote('Select a Verification Channel first.')}")
+                    fetched = u_dict(safe_y("GET", f"/servers/{sid}"), "server")
+                    sname = (fetched.get("name") if isinstance(fetched, dict) else None) or f"Server ({sid})"
+                    ok, err = post_verify_panel(cur["verify_channel"], sname)
+                    if not ok:
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=verification&err={urllib.parse.quote(err)}")
+                    return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=verification&sent=1")
+                return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=verification&saved=1")
             if tab == "presets":
                 if act == "preset_gaming":
-                    cur.update({"anti_link": True, "word_filter": True, "anti_spam": True, "max_tickets": 2, "ticket_cooldown": 30, "w_card": True})
+                    cur.update({"anti_link": True, "word_filter": True, "anti_spam": True, "max_tickets": 2, "ticket_cooldown": 30, "w_card": True, "active_preset": "preset_gaming"})
                 elif act == "preset_strict":
-                    cur.update({"anti_link": True, "word_filter": True, "anti_spam": True, "max_tickets": 1, "ticket_cooldown": 60})
+                    cur.update({"anti_link": True, "anti_caps": True, "word_filter": True, "anti_spam": True, "max_tickets": 1, "ticket_cooldown": 60, "active_preset": "preset_strict"})
                 elif act == "preset_chill":
-                    cur.update({"anti_link": False, "word_filter": True, "anti_spam": True, "max_tickets": 3, "ticket_cooldown": 15})
+                    cur.update({"anti_link": False, "anti_caps": False, "word_filter": True, "anti_spam": True, "max_tickets": 3, "ticket_cooldown": 15, "active_preset": "preset_chill"})
                 all_cfg[sid] = cur
                 save_all_cfg(all_cfg, sid)
                 return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=presets&saved=1")
