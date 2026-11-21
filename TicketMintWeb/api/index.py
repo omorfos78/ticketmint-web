@@ -26,13 +26,28 @@ ALL_COMMANDS = [
     ("replyquote", "@TicketMint Reply Quote", "Reply to a message and ping @TicketMint to quote it"),
 ]
 
+
+def ordinal_num(n):
+    try:
+        n = int(n)
+    except Exception:
+        return str(n)
+    if 11 <= (n % 100) <= 13:
+        suf = "th"
+    else:
+        suf = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suf}"
+
+
 def esc(val):
     return html.escape(str(val or ""), quote=True)
+
 
 def clean_err(raw_text):
     txt = re.sub(r"<[^>]+>", " ", str(raw_text or ""))
     txt = re.sub(r"\s+", " ", txt).strip()
     return txt[:140] if txt else "Request failed"
+
 
 def r_cmd(*args):
     if not REDIS_URL or not REDIS_TOKEN:
@@ -46,6 +61,7 @@ def r_cmd(*args):
     with urllib.request.urlopen(req, timeout=8) as resp:
         return json.loads(resp.read().decode("utf-8")).get("result")
 
+
 def load_all_cfg():
     try:
         raw = r_cmd("GET", "ticketmint:cfg")
@@ -53,11 +69,13 @@ def load_all_cfg():
     except Exception:
         return {}
 
+
 def save_all_cfg(d):
     try:
         r_cmd("SET", "ticketmint:cfg", json.dumps(d))
     except Exception:
         pass
+
 
 def queue_outbox(job):
     try:
@@ -65,6 +83,7 @@ def queue_outbox(job):
         return True
     except Exception:
         return False
+
 
 def y_api(method, path, body=None, bearer=None, base_url=None):
     hdrs = {
@@ -79,11 +98,13 @@ def y_api(method, path, body=None, bearer=None, base_url=None):
         txt = resp.read().decode("utf-8")
         return json.loads(txt) if txt else {}
 
+
 def safe_y(method, path, body=None):
     try:
         return y_api(method, path, body)
     except Exception:
         return {}
+
 
 def post_raw_message(cid, payload):
     base_dict = payload if isinstance(payload, dict) else {"content": str(payload)}
@@ -117,7 +138,8 @@ def post_raw_message(cid, payload):
                 last_err = clean_err(e)
     return False, last_err or "Could not deliver message to channel."
 
-def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00", image_url="", footer="", kind="message"):
+
+def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00", image_url="", footer="", kind="message", ping=""):
     if not cid:
         return False, "No channel selected."
     try:
@@ -126,7 +148,9 @@ def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00
         c_int = 0xFF7A00
 
     parts = []
-    if content:
+    if ping:
+        parts.append(ping)
+    if content and content != ping:
         parts.append(content)
     if title:
         parts.append(f"**{title}**")
@@ -146,10 +170,11 @@ def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00
     if footer:
         embed_obj["footer"] = {"text": footer}
 
-    post_raw_message(cid, {"content": combined_text, "embeds": [embed_obj]})
+    post_raw_message(cid, {"content": ping or combined_text, "embeds": [embed_obj]})
     queued = queue_outbox({
         "type": kind,
         "channel_id": str(cid),
+        "ping": ping,
         "text": combined_text,
         "title": title,
         "description": description,
@@ -158,11 +183,14 @@ def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00
     })
     return True, ("" if queued else "Outbox queue unavailable")
 
+
 def u_list(d, k):
     return d if isinstance(d, list) else (d.get(k, []) if isinstance(d, dict) else [])
 
+
 def u_dict(d, k):
     return d.get(k, d) if isinstance(d, dict) else {}
+
 
 def get_scfg(sid):
     raw = load_all_cfg().get(str(sid), {})
@@ -176,18 +204,21 @@ def get_scfg(sid):
         "logs": raw.get("logs", ""),
         "welcome": raw.get("welcome", ""),
         "w_title": raw.get("w_title", "Welcome!"),
-        "w_msg": raw.get("w_msg", "Welcome {user} to {server}!"),
+        "w_msg": raw.get("w_msg", "Welcome {user} to {server}! You are our {ordinal} member!"),
         "w_banner": raw.get("w_banner", ""),
         "w_color": raw.get("w_color", "#ff7a00"),
         "goodbye": raw.get("goodbye", ""),
-        "g_msg": raw.get("g_msg", "{user} just left {server}."),
+        "g_msg": raw.get("g_msg", "{user} just left {server}. We now have {member_count} members."),
         "disabled_cmds": disabled if isinstance(disabled, list) else [],
         "anti_link": bool(raw.get("anti_link", True)),
         "word_filter": bool(raw.get("word_filter", True)),
         "max_tickets": int(raw.get("max_tickets", 2) or 2),
         "ticket_cooldown": int(raw.get("ticket_cooldown", 30) or 0),
         "blocked_words": raw.get("blocked_words", ""),
+        "warn_word_msg": raw.get("warn_word_msg", "{user}, that word is not allowed here."),
+        "warn_link_msg": raw.get("warn_link_msg", "{user}, links are not allowed in this channel."),
     }
+
 
 def is_admin(sid, uid):
     try:
@@ -204,6 +235,7 @@ def is_admin(sid, uid):
     except Exception:
         pass
     return False
+
 
 def post_panel(cid):
     bname = u_dict(safe_y("GET", "/me"), "bot").get("name", "TicketMint")
@@ -225,6 +257,7 @@ def post_panel(cid):
     post_raw_message(cid, payload)
     queued = queue_outbox({"type": "panel", "channel_id": str(cid)})
     return True, ("" if queued else "Outbox queue unavailable")
+
 
 CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
@@ -283,6 +316,7 @@ textarea{min-height:110px;resize:vertical}
 .stat-lbl{font-size:12px;color:#9ca3af;margin-top:2px}
 """
 
+
 def page(title, body, user=None):
     inv = f"<a href='{INVITE_URL}' class='btn btn-dark'>+ Invite Bot</a>"
     right = (
@@ -297,6 +331,7 @@ def page(title, body, user=None):
         f"{body}</body></html>"
     )
 
+
 def decode_jwt(tok):
     try:
         parts = tok.split(".")
@@ -308,6 +343,7 @@ def decode_jwt(tok):
         return obj if isinstance(obj, dict) and (obj.get("id") or obj.get("sub") or obj.get("user_id")) else None
     except Exception:
         return None
+
 
 class handler(BaseHTTPRequestHandler):
     def get_sess(self):
@@ -483,6 +519,7 @@ class handler(BaseHTTPRequestHandler):
                     return self.redir("/dashboard")
                 srv_obj = fetched if fetched and fetched.get("id") else {"id": sel_id, "name": f"Server ({sel_id})"}
             srv_name = (fetched.get("name") if isinstance(fetched, dict) else None) or srv_obj.get("name", f"Server ({sel_id})")
+            m_count = (fetched.get("member_count") if isinstance(fetched, dict) else None) or srv_obj.get("member_count") or 5
             sc = get_scfg(sel_id)
             tab = qs.get("tab", ["tickets"])[0].strip().lower()
             if tab not in ("tickets", "welcome", "announce", "automod", "commands"):
@@ -509,19 +546,13 @@ class handler(BaseHTTPRequestHandler):
                 return fallback
 
             extra_cats = []
-            for src in (chs_raw, fetched, srv_full):
+            for src in (chs_raw, fetched, srv_full, safe_y("GET", f"/servers/{sel_id}/categories")):
                 if isinstance(src, dict):
                     for key in ("categories", "folders", "groups"):
                         if isinstance(src.get(key), list):
                             extra_cats.extend(src[key])
-
-            if roles or chs or extra_cats:
-                try:
-                    r_cmd("SET", f"ticketmint:meta:{sel_id}", json.dumps({"roles": roles, "channels": chs, "categories": extra_cats}))
-                except Exception:
-                    pass
-            if not extra_cats and isinstance(meta, dict):
-                extra_cats = meta.get("categories", [])
+            if isinstance(meta, dict) and isinstance(meta.get("categories"), list):
+                extra_cats.extend(meta["categories"])
 
             def is_cat_item(c):
                 k = str(c.get("kind", "")).lower()
@@ -542,8 +573,10 @@ class handler(BaseHTTPRequestHandler):
                 if isinstance(ec, dict) and ec.get("id"):
                     cid = str(ec["id"])
                     cname = pick_name(ec)
-                    if cname:
+                    if cname and not re.match(r"^Category \([0-9a-f]{6,}\)$", cname, re.I):
                         cat_map[cid] = cname
+
+            children_by_parent = {}
             for c in chs:
                 if isinstance(c, dict):
                     if is_cat_item(c) and c.get("id"):
@@ -552,20 +585,32 @@ class handler(BaseHTTPRequestHandler):
                         if cname and cid not in cat_map:
                             cat_map[cid] = cname
                     pid = c.get("parent_id") or c.get("category_id") or c.get("parentId")
-                    pname = c.get("parent_name") or c.get("category_name") or c.get("parentName")
-                    if pid and isinstance(pname, str) and pname.strip() and str(pid) not in cat_map:
-                        cat_map[str(pid)] = pname.strip()
+                    if pid:
+                        pid_s = str(pid)
+                        children_by_parent.setdefault(pid_s, []).append(f"#{c.get('name', 'channel')}")
+                        pname = c.get("parent_name") or c.get("category_name") or c.get("parentName")
+                        if isinstance(pname, str) and pname.strip() and pid_s not in cat_map:
+                            cat_map[pid_s] = pname.strip()
 
-            parent_ids = {
-                str(c.get("parent_id") or c.get("category_id") or c.get("parentId") or "")
-                for c in chs
-                if isinstance(c, dict) and (c.get("parent_id") or c.get("category_id") or c.get("parentId"))
-            }
-            for pid in parent_ids:
-                if pid and pid not in cat_map:
-                    cat_map[pid] = f"Category ({pid[:8]})"
+            for pid_s, child_names in children_by_parent.items():
+                if pid_s not in cat_map:
+                    ch_info = u_dict(safe_y("GET", f"/channels/{pid_s}"), "channel")
+                    cname = pick_name(ch_info)
+                    if cname:
+                        cat_map[pid_s] = cname
+                if pid_s not in cat_map:
+                    preview = ", ".join(child_names[:2])
+                    if len(child_names) > 2:
+                        preview += f" +{len(child_names) - 2}"
+                    cat_map[pid_s] = f"Category ({preview})"
 
             cat_chs = [{"id": cid, "name": cname} for cid, cname in cat_map.items()]
+
+            if roles or chs or cat_chs:
+                try:
+                    r_cmd("SET", f"ticketmint:meta:{sel_id}", json.dumps({"roles": roles, "channels": chs, "categories": cat_chs}))
+                except Exception:
+                    pass
 
             def ch_opts(items, selected_id, empty_label, prefix="#"):
                 out = [f"<option value=''>{esc(empty_label)}</option>"]
@@ -609,7 +654,7 @@ class handler(BaseHTTPRequestHandler):
                     f"<div class='field'><label>Admin / Mod Roles</label><small>Members with these roles can view, claim, and close private tickets.</small><div class='pills'>{pills}</div></div>"
                     f"<div class='field'><label>Ticket Panel Channel</label><small>Channel where the Open a Ticket dashboard gets posted.</small><select name='dash'>{cho}</select></div>"
                     f"<div class='field'><label>Ticket Category (Optional)</label><small>Category where new private ticket rooms are placed.</small><select name='cat'>{cao}</select></div>"
-                    f"<div class='field'><label>Ticket Logs Channel (Optional)</label><small>Receives a log whenever a ticket is closed.</small><select name='logs'>{lgo}</select></div>"
+                    f"<div class='field'><label>Ticket Logs Channel (Optional)</label><small>Receives a log whenever a ticket is opened or closed.</small><select name='logs'>{lgo}</select></div>"
                     f"<div style='display:flex;gap:10px;flex-wrap:wrap;padding-top:16px'>"
                     f"<button name='act' value='save' class='btn btn-orange'>Save Changes</button>"
                     f"<button name='act' value='post' class='btn btn-dark'>Save &amp; Post Ticket Panel</button>"
@@ -619,20 +664,26 @@ class handler(BaseHTTPRequestHandler):
                 w_cho = ch_opts(txt_chs, sc["welcome"], "Disabled (No Welcome Channel)", "#")
                 g_cho = ch_opts(txt_chs, sc["goodbye"], "Disabled (No Goodbye Channel)", "#")
                 prev_col = sc["w_color"] if str(sc["w_color"]).startswith("#") else "#ff7a00"
-                prev_txt = esc(sc["w_msg"]).replace("{user}", f"@{esc(sess['username'])}").replace("{server}", esc(srv_name))
+                prev_txt = (
+                    esc(sc["w_msg"])
+                    .replace("{user}", f"@{esc(sess['username'])}")
+                    .replace("{server}", esc(srv_name))
+                    .replace("{member_count}", str(m_count))
+                    .replace("{ordinal}", ordinal_num(m_count))
+                )
                 banner_prev = f"<img src='{esc(sc['w_banner'])}' style='width:100%;max-height:150px;object-fit:cover;border-radius:8px;margin-top:10px' alt=''>" if sc["w_banner"] else ""
                 panel_html = (
                     f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='welcome'>"
-                    f"<div class='field'><label>Welcome Channel</label><small>Channel where welcome cards are posted when members join.</small><select name='welcome'>{w_cho}</select></div>"
+                    f"<div class='field'><label>Welcome Channel</label><small>Pings the new member and posts their welcome card with member count.</small><select name='welcome'>{w_cho}</select></div>"
                     f"<div class='field row2'><div><label>Welcome Embed Title</label><small>Heading shown at the top of the welcome card.</small><input type='text' name='w_title' value='{esc(sc['w_title'])}' placeholder='Welcome!'></div>"
                     f"<div><label>Accent Color (Hex)</label><small>Default TicketMint orange is #ff7a00.</small><input type='text' name='w_color' value='{esc(sc['w_color'])}' placeholder='#ff7a00'></div></div>"
-                    f"<div class='field'><label>Welcome Message</label><small>Supports <b>{{user}}</b> and <b>{{server}}</b>.</small><input type='text' name='w_msg' value='{esc(sc['w_msg'])}' placeholder='Welcome {{user}} to {{server}}!'></div>"
+                    f"<div class='field'><label>Welcome Message</label><small>Supports <b>{{user}}</b> (ping), <b>{{server}}</b>, <b>{{ordinal}}</b> (e.g. 5th), and <b>{{member_count}}</b>.</small><input type='text' name='w_msg' value='{esc(sc['w_msg'])}' placeholder='Welcome {{user}} to {{server}}! You are our {{ordinal}} member!'></div>"
                     f"<div class='field'><label>Welcome Banner Image URL (Optional)</label><small>Direct image link displayed inside the welcome message.</small><input type='text' name='w_banner' value='{esc(sc['w_banner'])}' placeholder='https://...'>"
                     f"<div class='preview-box' style='border-left-color:{esc(prev_col)}'><div style='font-size:11px;color:#9ca3af;margin-bottom:4px'>LIVE EMBED PREVIEW</div>"
                     f"<div style='font-weight:800;font-size:15px;margin-bottom:4px'>{esc(sc['w_title'] or 'Welcome!')}</div>"
                     f"<div style='color:#cbd5e1;font-size:14px'>{prev_txt}</div>{banner_prev}</div></div>"
                     f"<div class='field'><label>Goodbye Channel (Optional)</label><small>Channel where goodbye messages are posted when a member leaves.</small><select name='goodbye'>{g_cho}</select></div>"
-                    f"<div class='field'><label>Goodbye Message</label><small>Supports <b>{{user}}</b> and <b>{{server}}</b>.</small><input type='text' name='g_msg' value='{esc(sc['g_msg'])}' placeholder='{{user}} just left {{server}}.'></div>"
+                    f"<div class='field'><label>Goodbye Message</label><small>Supports <b>{{user}}</b>, <b>{{server}}</b>, and <b>{{member_count}}</b>.</small><input type='text' name='g_msg' value='{esc(sc['g_msg'])}' placeholder='{{user}} just left {{server}}. We now have {{member_count}} members.'></div>"
                     f"<div style='display:flex;gap:10px;flex-wrap:wrap;padding-top:16px'>"
                     f"<button name='act' value='save' class='btn btn-orange'>Save Welcome &amp; Goodbye</button>"
                     f"<button name='act' value='test_welcome' class='btn btn-dark'>Send Test Welcome Card</button></div></form>"
@@ -650,14 +701,16 @@ class handler(BaseHTTPRequestHandler):
             elif tab == "automod":
                 panel_html = (
                     f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='automod'>"
-                    f"<div class='field'><label>Chat &amp; Ticket Protection</label><small>Auto-Mod is on by default to keep your server clean.</small>"
-                    f"<div class='cmd-row'><div><div style='font-weight:700;font-size:14px'>Anti-Link Guard</div><div style='color:#9ca3af;font-size:12px;margin-top:2px'>Flag or block unsolicited external links in chat</div></div>"
+                    f"<div class='field'><label>Chat &amp; Ticket Protection</label><small>Deletes flagged messages and sends an auto-vanishing private warning only for that user.</small>"
+                    f"<div class='cmd-row'><div><div style='font-weight:700;font-size:14px'>Anti-Link Guard</div><div style='color:#9ca3af;font-size:12px;margin-top:2px'>Block external links from non-staff members</div></div>"
                     f"<label class='pill'><input type='checkbox' name='anti_link' value='1' {'checked' if sc['anti_link'] else ''}><span>Active</span></label></div>"
-                    f"<div class='cmd-row'><div><div style='font-weight:700;font-size:14px'>Blocked Word Filter</div><div style='color:#9ca3af;font-size:12px;margin-top:2px'>Filter profanity and custom words configured below</div></div>"
+                    f"<div class='cmd-row'><div><div style='font-weight:700;font-size:14px'>Blocked Word Filter</div><div style='color:#9ca3af;font-size:12px;margin-top:2px'>Filter profanity and custom blocked words</div></div>"
                     f"<label class='pill'><input type='checkbox' name='word_filter' value='1' {'checked' if sc['word_filter'] else ''}><span>Active</span></label></div></div>"
+                    f"<div class='field'><label>Banned Words (Comma Separated)</label><small>Example: badword1, badword2, badword3</small><input type='text' name='blocked_words' value='{esc(sc['blocked_words'])}' placeholder='badword1, badword2, badword3'></div>"
+                    f"<div class='field row2'><div><label>Banned Word Warning Message</label><small>Sent to the user who typed a banned word. Use <b>{{user}}</b>.</small><input type='text' name='warn_word_msg' value='{esc(sc['warn_word_msg'])}' placeholder='{{user}}, that word is not allowed here.'></div>"
+                    f"<div><label>Link Warning Message</label><small>Sent to the user who posted a link. Use <b>{{user}}</b>.</small><input type='text' name='warn_link_msg' value='{esc(sc['warn_link_msg'])}' placeholder='{{user}}, links are not allowed in this channel.'></div></div>"
                     f"<div class='field row2'><div><label>Max Open Tickets Per User</label><small>Prevent users from opening too many rooms at once.</small><input type='number' name='max_tickets' min='1' max='10' value='{esc(sc['max_tickets'])}'></div>"
                     f"<div><label>Ticket Cooldown (Seconds)</label><small>Wait time between opening tickets (0 = off).</small><input type='number' name='ticket_cooldown' min='0' max='3600' value='{esc(sc['ticket_cooldown'])}'></div></div>"
-                    f"<div class='field'><label>Blocked Words (Comma Separated)</label><small>Example: word1, word2, word3</small><input type='text' name='blocked_words' value='{esc(sc['blocked_words'])}' placeholder='word1, word2, word3'></div>"
                     f"<div style='display:flex;gap:10px;flex-wrap:wrap;padding-top:16px'><button name='act' value='save' class='btn btn-orange'>Save Protection Rules</button></div></form>"
                 )
             else:
@@ -732,12 +785,12 @@ class handler(BaseHTTPRequestHandler):
             if tab == "welcome":
                 cur["welcome"] = data.get("welcome", [""])[0].strip()
                 cur["w_title"] = data.get("w_title", ["Welcome!"])[0].strip() or "Welcome!"
-                cur["w_msg"] = data.get("w_msg", ["Welcome {user} to {server}!"])[0].strip() or "Welcome {user} to {server}!"
+                cur["w_msg"] = data.get("w_msg", ["Welcome {user} to {server}! You are our {ordinal} member!"])[0].strip() or "Welcome {user} to {server}! You are our {ordinal} member!"
                 cur["w_banner"] = data.get("w_banner", [""])[0].strip()
                 w_col = data.get("w_color", ["#ff7a00"])[0].strip()
                 cur["w_color"] = w_col if re.match(r"^#[0-9a-fA-F]{6}$", w_col) else "#ff7a00"
                 cur["goodbye"] = data.get("goodbye", [""])[0].strip()
-                cur["g_msg"] = data.get("g_msg", ["{user} just left {server}."])[0].strip() or "{user} just left {server}."
+                cur["g_msg"] = data.get("g_msg", ["{user} just left {server}. We now have {member_count} members."])[0].strip() or "{user} just left {server}. We now have {member_count} members."
                 all_cfg[sid] = cur
                 save_all_cfg(all_cfg)
                 if act == "test_welcome":
@@ -746,14 +799,23 @@ class handler(BaseHTTPRequestHandler):
                         return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=welcome&err={urllib.parse.quote('Select a Welcome Channel first.')}")
                     fetched = u_dict(safe_y("GET", f"/servers/{sid}"), "server")
                     sname = (fetched.get("name") if isinstance(fetched, dict) else None) or f"Server ({sid})"
-                    txt = cur["w_msg"].replace("{user}", f"@{sess['username']}").replace("{server}", sname)
+                    m_cnt = (fetched.get("member_count") if isinstance(fetched, dict) else None) or len(u_list(safe_y("GET", f"/servers/{sid}/members"), "members")) or 5
+                    ping_str = f"<@{sess['id']}>"
+                    txt = (
+                        cur["w_msg"]
+                        .replace("{user}", ping_str)
+                        .replace("{server}", sname)
+                        .replace("{member_count}", str(m_cnt))
+                        .replace("{ordinal}", ordinal_num(m_cnt))
+                    )
                     ok, err = send_msg_smart(
                         target_ch,
+                        ping=ping_str,
                         title=cur["w_title"],
                         description=txt,
                         color_hex=cur["w_color"],
                         image_url=cur["w_banner"],
-                        footer="Test Welcome Card • TicketMint",
+                        footer=f"Member #{m_cnt} • Test Welcome Card",
                         kind="welcome_test",
                     )
                     if not ok:
@@ -771,7 +833,7 @@ class handler(BaseHTTPRequestHandler):
                     )
                 ok, err = send_msg_smart(
                     ann_cid,
-                    content=ping,
+                    ping=ping,
                     title=ann_title,
                     description=ann_body,
                     color_hex="#ff7a00",
@@ -793,6 +855,8 @@ class handler(BaseHTTPRequestHandler):
                 except Exception:
                     cur["ticket_cooldown"] = 30
                 cur["blocked_words"] = data.get("blocked_words", [""])[0].strip()
+                cur["warn_word_msg"] = data.get("warn_word_msg", ["{user}, that word is not allowed here."])[0].strip() or "{user}, that word is not allowed here."
+                cur["warn_link_msg"] = data.get("warn_link_msg", ["{user}, links are not allowed in this channel."])[0].strip() or "{user}, links are not allowed in this channel."
                 all_cfg[sid] = cur
                 save_all_cfg(all_cfg)
                 return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=automod&saved=1")
