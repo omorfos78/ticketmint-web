@@ -87,6 +87,51 @@ def safe_y(method, path, body=None):
         return {}
 
 
+def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00", image_url="", footer=""):
+    if not cid:
+        return False, "No channel selected."
+    try:
+        c_int = int(str(color_hex or "#ff7a00").lstrip("#"), 16)
+    except Exception:
+        c_int = 0xFF7A00
+
+    parts = []
+    if content:
+        parts.append(content)
+    if title:
+        parts.append(f"**{title}**")
+    if description:
+        parts.append(description)
+    if image_url:
+        parts.append(image_url)
+    if footer:
+        parts.append(f"-# {footer}")
+    fallback_content = "\n\n".join([p for p in parts if p]).strip() or "TicketMint"
+
+    embed_obj = {"title": title or None, "description": description or "", "color": c_int}
+    if not title:
+        embed_obj.pop("title", None)
+    if image_url:
+        embed_obj["image"] = {"url": image_url}
+    if footer:
+        embed_obj["footer"] = {"text": footer}
+
+    last_err = ""
+    for payload in (
+        {"content": content or "", "embeds": [embed_obj]},
+        {"content": fallback_content},
+    ):
+        try:
+            y_api("POST", f"/channels/{cid}/messages", payload)
+            return True, ""
+        except urllib.error.HTTPError as he:
+            body_err = he.read().decode("utf-8", errors="ignore")
+            last_err = f"API {he.code}: {body_err[:180]}"
+        except Exception as e:
+            last_err = str(e)[:180]
+    return False, last_err or "Failed to send message."
+
+
 def u_list(d, k):
     return d if isinstance(d, list) else (d.get(k, []) if isinstance(d, dict) else [])
 
@@ -112,6 +157,11 @@ def get_scfg(sid):
         "goodbye": raw.get("goodbye", ""),
         "g_msg": raw.get("g_msg", "{user} just left {server}."),
         "disabled_cmds": raw.get("disabled_cmds", []),
+        "anti_link": bool(raw.get("anti_link", False)),
+        "word_filter": bool(raw.get("word_filter", False)),
+        "max_tickets": int(raw.get("max_tickets", 2) or 2),
+        "ticket_cooldown": int(raw.get("ticket_cooldown", 30) or 0),
+        "blocked_words": raw.get("blocked_words", ""),
     }
 
 
@@ -150,7 +200,22 @@ def post_panel(cid):
             ],
         }],
     }
-    safe_y("POST", f"/channels/{cid}/messages", payload)
+    try:
+        y_api("POST", f"/channels/{cid}/messages", payload)
+        return True, ""
+    except Exception:
+        return send_msg_smart(
+            cid,
+            title="OPEN A TICKET",
+            description=(
+                "Got a question, report, or appeal? Use `/ticketpanel` in chat or click a button below:\n"
+                "• **General Help** — Need help with the server, roles, or a bug?\n"
+                "• **Report Someone** — Spotted rule-breaking?\n"
+                "• **Punishment Appeal** — Think a ban, mute, or warning wasn't fair?"
+            ),
+            color_hex="#ff7a00",
+            footer=f"{bname} • Private Ticket Desk",
+        )
 
 
 CSS = """
@@ -192,7 +257,7 @@ a{text-decoration:none;color:inherit}
 .field:last-child{border-bottom:none}
 .field label{display:block;font-weight:700;margin-bottom:4px}
 .field small{display:block;color:#9ca3af;margin-bottom:10px}
-select,input[type=text],textarea{width:100%;padding:11px 12px;border-radius:9px;background:#0b0d12;color:#fff;border:1px solid #2a3040;font-size:14px;font-family:inherit}
+select,input[type=text],input[type=number],textarea{width:100%;padding:11px 12px;border-radius:9px;background:#0b0d12;color:#fff;border:1px solid #2a3040;font-size:14px;font-family:inherit}
 textarea{min-height:110px;resize:vertical}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
 @media(max-width:600px){.row2{grid-template-columns:1fr}}
@@ -204,6 +269,10 @@ textarea{min-height:110px;resize:vertical}
 .chk-line{display:flex;align-items:center;gap:10px;cursor:pointer;font-weight:600;font-size:14px}
 .chk-line input{width:17px;height:17px;accent-color:#ff7a00}
 .preview-box{background:#0b0d12;border:1px solid #242a3a;border-left:4px solid #ff7a00;border-radius:10px;padding:14px 16px;margin-top:10px}
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:18px}
+.stat-box{background:#0b0d12;border:1px solid #1f2432;border-radius:10px;padding:14px}
+.stat-num{font-size:22px;font-weight:900;color:#ff7a00}
+.stat-lbl{font-size:12px;color:#9ca3af;margin-top:2px}
 """
 
 
@@ -410,7 +479,7 @@ class handler(BaseHTTPRequestHandler):
             srv_name = (fetched.get("name") if isinstance(fetched, dict) else None) or srv_obj.get("name", f"Server ({sel_id})")
             sc = get_scfg(sel_id)
             tab = qs.get("tab", ["tickets"])[0].strip().lower()
-            if tab not in ("tickets", "welcome", "announce", "commands"):
+            if tab not in ("tickets", "welcome", "announce", "automod", "commands"):
                 tab = "tickets"
 
             meta = {}
@@ -421,17 +490,51 @@ class handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
             roles = u_list(safe_y("GET", f"/servers/{sel_id}/roles"), "roles") or meta.get("roles", [])
-            chs = u_list(safe_y("GET", f"/servers/{sel_id}/channels"), "channels") or meta.get("channels", [])
+            chs_raw = safe_y("GET", f"/servers/{sel_id}/channels")
+            chs = u_list(chs_raw, "channels") or meta.get("channels", [])
+            extra_cats = chs_raw.get("categories", []) if isinstance(chs_raw, dict) else []
             if roles or chs:
                 try:
-                    r_cmd("SET", f"ticketmint:meta:{sel_id}", json.dumps({"roles": roles, "channels": chs}))
+                    r_cmd("SET", f"ticketmint:meta:{sel_id}", json.dumps({"roles": roles, "channels": chs, "categories": extra_cats}))
                 except Exception:
                     pass
+            if not extra_cats and isinstance(meta, dict):
+                extra_cats = meta.get("categories", [])
 
-            is_cat = lambda c: str(c.get("kind", "")).lower() in ("category", "folder", "group") or str(c.get("type", "")).lower() in ("category", "folder", "group", "4") or bool(c.get("is_category"))
-            is_txt = lambda c: not is_cat(c) and str(c.get("kind", "text")).lower() not in ("voice", "stage") and str(c.get("type", "0")).lower() not in ("voice", "stage", "2", "13")
-            txt_chs = [c for c in chs if is_txt(c)]
-            cat_chs = [c for c in chs if is_cat(c)]
+            def is_cat_item(c):
+                k = str(c.get("kind", "")).lower()
+                t = str(c.get("type", "")).lower()
+                return k in ("category", "folder", "group") or t in ("category", "folder", "group", "4") or bool(c.get("is_category"))
+
+            def is_voice_item(c):
+                k = str(c.get("kind", "")).lower()
+                t = str(c.get("type", "")).lower()
+                return k in ("voice", "stage") or t in ("voice", "stage", "2", "13")
+
+            txt_chs = [c for c in chs if not is_cat_item(c) and not is_voice_item(c)]
+            if not txt_chs:
+                txt_chs = [c for c in chs if not is_cat_item(c)]
+
+            known_ids = {str(c.get("id", "")) for c in chs}
+            parent_ids = {
+                str(c.get("parent_id") or c.get("category_id") or c.get("parentId") or "")
+                for c in chs
+                if (c.get("parent_id") or c.get("category_id") or c.get("parentId"))
+            }
+            cat_map = {}
+            for ec in extra_cats:
+                if isinstance(ec, dict) and ec.get("id"):
+                    cat_map[str(ec["id"])] = ec.get("name") or ec.get("title") or f"Category ({ec['id']})"
+            for c in chs:
+                if is_cat_item(c) and c.get("id"):
+                    cat_map[str(c["id"])] = c.get("name") or c.get("title") or f"Category ({c['id']})"
+            for pid in parent_ids:
+                if pid and pid not in known_ids and pid not in cat_map:
+                    cat_map[pid] = f"Category ({pid[:8]})"
+
+            cat_chs = [{"id": cid, "name": cname} for cid, cname in cat_map.items()]
+            if not cat_chs:
+                cat_chs = [{"id": str(c.get("id", "")), "name": c.get("name", "Channel")} for c in chs if c.get("id")]
 
             def ch_opts(items, selected_id, empty_label, prefix="#"):
                 out = [f"<option value=''>{esc(empty_label)}</option>"]
@@ -443,11 +546,21 @@ class handler(BaseHTTPRequestHandler):
 
             notice = ""
             if qs.get("saved"):
-                notice = "<div style='background:#16a34a22;border:1px solid #16a34a;color:#4ade80;padding:10px 14px;border-radius:9px;margin-bottom:16px'>Saved changes! Your bot remembers these settings automatically.</div>"
+                notice = "<div style='background:#16a34a22;border:1px solid #16a34a;color:#4ade80;padding:10px 14px;border-radius:9px;margin-bottom:16px'>Saved changes!</div>"
             elif qs.get("sent"):
-                notice = "<div style='background:#16a34a22;border:1px solid #16a34a;color:#4ade80;padding:10px 14px;border-radius:9px;margin-bottom:16px'>Announcement sent to your server!</div>"
+                notice = "<div style='background:#16a34a22;border:1px solid #16a34a;color:#4ade80;padding:10px 14px;border-radius:9px;margin-bottom:16px'>Sent to your server channel!</div>"
             elif qs.get("err"):
                 notice = f"<div style='background:#dc262622;border:1px solid #dc2626;color:#f87171;padding:10px 14px;border-radius:9px;margin-bottom:16px'>{esc(qs.get('err', ['Error'])[0])}</div>"
+
+            active_cmds = len(ALL_COMMANDS) - len(set(sc["disabled_cmds"]))
+            stats_bar = (
+                f"<div class='stats-grid'>"
+                f"<div class='stat-box'><div class='stat-num'>{len(sc['roles'])}</div><div class='stat-lbl'>Mod Roles</div></div>"
+                f"<div class='stat-box'><div class='stat-num'>{len(txt_chs)}</div><div class='stat-lbl'>Text Channels</div></div>"
+                f"<div class='stat-box'><div class='stat-num'>{len(cat_chs)}</div><div class='stat-lbl'>Categories</div></div>"
+                f"<div class='stat-box'><div class='stat-num'>{active_cmds}/{len(ALL_COMMANDS)}</div><div class='stat-lbl'>Active Commands</div></div>"
+                f"</div>"
+            )
 
             if tab == "tickets":
                 pills = "".join(
@@ -455,17 +568,21 @@ class handler(BaseHTTPRequestHandler):
                     for r in roles if r.get("name") != "@everyone"
                 )
                 if not pills:
-                    pills = "<span style='color:#9ca3af;font-size:13px'>Make sure your bot is running and TicketMint is in this server, then refresh.</span>"
+                    pills = "<span style='color:#9ca3af;font-size:13px'>Make sure TicketMint is in this server, then refresh.</span>"
                 cho = ch_opts(txt_chs, sc["dash"], "-- Select Ticket Panel Channel --", "#")
                 cao = ch_opts(cat_chs, sc["cat"], "None (Optional)", "")
                 lgo = ch_opts(txt_chs, sc["logs"], "None (Optional)", "#")
                 panel_html = (
+                    f"{stats_bar}"
                     f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='tickets'>"
                     f"<div class='field'><label>Admin / Mod Roles</label><small>Members with these roles can view, claim, and close private tickets.</small><div class='pills'>{pills}</div></div>"
-                    f"<div class='field'><label>Ticket Panel Channel</label><small>Channel where the orange Open a Ticket dashboard gets posted.</small><select name='dash'>{cho}</select></div>"
-                    f"<div class='field'><label>Ticket Category (Optional)</label><small>Category folder where new private ticket rooms appear.</small><select name='cat'>{cao}</select></div>"
-                    f"<div class='field'><label>Ticket Logs Channel (Optional)</label><small>Receives an embed log whenever a ticket is closed.</small><select name='logs'>{lgo}</select></div>"
-                    f"<div style='display:flex;gap:10px;flex-wrap:wrap;padding-top:16px'><button name='act' value='save' class='btn btn-orange'>Save Changes</button><button name='act' value='post' class='btn btn-dark'>Save &amp; Post Ticket Panel</button></div></form>"
+                    f"<div class='field'><label>Ticket Panel Channel</label><small>Channel where the Open a Ticket dashboard gets posted.</small><select name='dash'>{cho}</select></div>"
+                    f"<div class='field'><label>Ticket Category (Optional)</label><small>Category where new private ticket rooms are placed.</small><select name='cat'>{cao}</select></div>"
+                    f"<div class='field'><label>Ticket Logs Channel (Optional)</label><small>Receives a log whenever a ticket is closed.</small><select name='logs'>{lgo}</select></div>"
+                    f"<div style='display:flex;gap:10px;flex-wrap:wrap;padding-top:16px'>"
+                    f"<button name='act' value='save' class='btn btn-orange'>Save Changes</button>"
+                    f"<button name='act' value='post' class='btn btn-dark'>Save &amp; Post Ticket Panel</button>"
+                    f"<button name='act' value='modping' class='btn btn-dark'>Send Staff Ping to Panel Channel</button></div></form>"
                 )
             elif tab == "welcome":
                 w_cho = ch_opts(txt_chs, sc["welcome"], "Disabled (No Welcome Channel)", "#")
@@ -475,27 +592,42 @@ class handler(BaseHTTPRequestHandler):
                 banner_prev = f"<img src='{esc(sc['w_banner'])}' style='width:100%;max-height:150px;object-fit:cover;border-radius:8px;margin-top:10px' alt=''>" if sc["w_banner"] else ""
                 panel_html = (
                     f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='welcome'>"
-                    f"<div class='field'><label>Welcome Channel</label><small>Channel where automatic welcome cards are posted when members join.</small><select name='welcome'>{w_cho}</select></div>"
+                    f"<div class='field'><label>Welcome Channel</label><small>Channel where welcome cards are posted when members join.</small><select name='welcome'>{w_cho}</select></div>"
                     f"<div class='field row2'><div><label>Welcome Embed Title</label><small>Heading shown at the top of the welcome card.</small><input type='text' name='w_title' value='{esc(sc['w_title'])}' placeholder='Welcome!'></div>"
                     f"<div><label>Accent Color (Hex)</label><small>Default TicketMint orange is #ff7a00.</small><input type='text' name='w_color' value='{esc(sc['w_color'])}' placeholder='#ff7a00'></div></div>"
                     f"<div class='field'><label>Welcome Message</label><small>Supports <b>{{user}}</b> and <b>{{server}}</b>.</small><input type='text' name='w_msg' value='{esc(sc['w_msg'])}' placeholder='Welcome {{user}} to {{server}}!'></div>"
-                    f"<div class='field'><label>Welcome Banner Image URL (Optional)</label><small>Direct image link displayed inside the welcome embed.</small><input type='text' name='w_banner' value='{esc(sc['w_banner'])}' placeholder='https://...'>"
+                    f"<div class='field'><label>Welcome Banner Image URL (Optional)</label><small>Direct image link displayed inside the welcome message.</small><input type='text' name='w_banner' value='{esc(sc['w_banner'])}' placeholder='https://...'>"
                     f"<div class='preview-box' style='border-left-color:{esc(prev_col)}'><div style='font-size:11px;color:#9ca3af;margin-bottom:4px'>LIVE EMBED PREVIEW</div>"
                     f"<div style='font-weight:800;font-size:15px;margin-bottom:4px'>{esc(sc['w_title'] or 'Welcome!')}</div>"
                     f"<div style='color:#cbd5e1;font-size:14px'>{prev_txt}</div>{banner_prev}</div></div>"
                     f"<div class='field'><label>Goodbye Channel (Optional)</label><small>Channel where goodbye messages are posted when a member leaves.</small><select name='goodbye'>{g_cho}</select></div>"
                     f"<div class='field'><label>Goodbye Message</label><small>Supports <b>{{user}}</b> and <b>{{server}}</b>.</small><input type='text' name='g_msg' value='{esc(sc['g_msg'])}' placeholder='{{user}} just left {{server}}.'></div>"
-                    f"<div style='display:flex;gap:10px;flex-wrap:wrap;padding-top:16px'><button name='act' value='save' class='btn btn-orange'>Save Welcome &amp; Goodbye</button></div></form>"
+                    f"<div style='display:flex;gap:10px;flex-wrap:wrap;padding-top:16px'>"
+                    f"<button name='act' value='save' class='btn btn-orange'>Save Welcome &amp; Goodbye</button>"
+                    f"<button name='act' value='test_welcome' class='btn btn-dark'>Send Test Welcome Card</button></div></form>"
                 )
             elif tab == "announce":
                 ann_cho = ch_opts(txt_chs, sc["dash"], "-- Select Target Channel --", "#")
                 panel_html = (
                     f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='announce'>"
-                    f"<div class='field'><label>Target Channel</label><small>Choose where TicketMint should post this announcement embed.</small><select name='ann_channel' required>{ann_cho}</select></div>"
-                    f"<div class='field'><label>Announcement Title</label><small>Displayed as a bold heading inside the orange embed.</small><input type='text' name='ann_title' placeholder='Server Update!' required></div>"
+                    f"<div class='field'><label>Target Channel</label><small>Choose where TicketMint should post this announcement.</small><select name='ann_channel' required>{ann_cho}</select></div>"
+                    f"<div class='field'><label>Announcement Title</label><small>Displayed as a bold heading.</small><input type='text' name='ann_title' placeholder='Server Update!' required></div>"
                     f"<div class='field'><label>Announcement Message</label><small>Write your announcement details below.</small><textarea name='ann_body' placeholder='Hey everyone! Here is what is new...' required></textarea></div>"
                     f"<div class='field'><label class='chk-line'><input type='checkbox' name='ann_everyone' value='1'><span>Ping @everyone above the announcement</span></label></div>"
                     f"<div style='display:flex;gap:10px;flex-wrap:wrap;padding-top:16px'><button name='act' value='announce' class='btn btn-orange'>Send Announcement</button></div></form>"
+                )
+            elif tab == "automod":
+                panel_html = (
+                    f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='automod'>"
+                    f"<div class='field'><label>Chat &amp; Ticket Protection</label><small>Guard your server and prevent ticket spam.</small>"
+                    f"<div class='cmd-row'><div><div style='font-weight:700;font-size:14px'>Anti-Link Guard</div><div style='color:#9ca3af;font-size:12px;margin-top:2px'>Flag or block unsolicited external links in chat</div></div>"
+                    f"<label class='pill'><input type='checkbox' name='anti_link' value='1' {'checked' if sc['anti_link'] else ''}><span>Active</span></label></div>"
+                    f"<div class='cmd-row'><div><div style='font-weight:700;font-size:14px'>Blocked Word Filter</div><div style='color:#9ca3af;font-size:12px;margin-top:2px'>Filter custom words configured below</div></div>"
+                    f"<label class='pill'><input type='checkbox' name='word_filter' value='1' {'checked' if sc['word_filter'] else ''}><span>Active</span></label></div></div>"
+                    f"<div class='field row2'><div><label>Max Open Tickets Per User</label><small>Prevent users from opening too many rooms at once.</small><input type='number' name='max_tickets' min='1' max='10' value='{esc(sc['max_tickets'])}'></div>"
+                    f"<div><label>Ticket Cooldown (Seconds)</label><small>Wait time between opening tickets (0 = off).</small><input type='number' name='ticket_cooldown' min='0' max='3600' value='{esc(sc['ticket_cooldown'])}'></div></div>"
+                    f"<div class='field'><label>Blocked Words (Comma Separated)</label><small>Example: word1, word2, word3</small><input type='text' name='blocked_words' value='{esc(sc['blocked_words'])}' placeholder='word1, word2, word3'></div>"
+                    f"<div style='display:flex;gap:10px;flex-wrap:wrap;padding-top:16px'><button name='act' value='save' class='btn btn-orange'>Save Protection Rules</button></div></form>"
                 )
             else:
                 disabled = set(sc["disabled_cmds"])
@@ -515,6 +647,7 @@ class handler(BaseHTTPRequestHandler):
                 f"<a href='/dashboard?server={esc(sel_id)}&tab=tickets' class='{'act' if tab=='tickets' else ''}'>Tickets &amp; Roles</a>"
                 f"<a href='/dashboard?server={esc(sel_id)}&tab=welcome' class='{'act' if tab=='welcome' else ''}'>Welcome &amp; Goodbye</a>"
                 f"<a href='/dashboard?server={esc(sel_id)}&tab=announce' class='{'act' if tab=='announce' else ''}'>Announcements</a>"
+                f"<a href='/dashboard?server={esc(sel_id)}&tab=automod' class='{'act' if tab=='automod' else ''}'>Auto-Mod &amp; Limits</a>"
                 f"<a href='/dashboard?server={esc(sel_id)}&tab=commands' class='{'act' if tab=='commands' else ''}'>Commands &amp; Tools</a>"
                 f"<hr><a href='/dashboard'>Switch Server</a>"
             )
@@ -554,8 +687,16 @@ class handler(BaseHTTPRequestHandler):
                 cur["logs"] = data.get("logs", [""])[0].strip()
                 all_cfg[sid] = cur
                 save_all_cfg(all_cfg)
-                if act == "post" and cur["dash"]:
-                    post_panel(cur["dash"])
+                if act == "post":
+                    ok, err = post_panel(cur["dash"])
+                    if not ok:
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=tickets&err={urllib.parse.quote(err)}")
+                    return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=tickets&sent=1")
+                if act == "modping":
+                    ok, err = send_msg_smart(cur["dash"], content=f"Staff check-in triggered by @{sess['username']} • TicketMint")
+                    if not ok:
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=tickets&err={urllib.parse.quote(err)}")
+                    return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=tickets&sent=1")
                 return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=tickets&saved=1")
             if tab == "welcome":
                 cur["welcome"] = data.get("welcome", [""])[0].strip()
@@ -568,6 +709,24 @@ class handler(BaseHTTPRequestHandler):
                 cur["g_msg"] = data.get("g_msg", ["{user} just left {server}."])[0].strip() or "{user} just left {server}."
                 all_cfg[sid] = cur
                 save_all_cfg(all_cfg)
+                if act == "test_welcome":
+                    target_ch = cur["welcome"] or cur["dash"]
+                    if not target_ch:
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=welcome&err={urllib.parse.quote('Select a Welcome Channel first.')}")
+                    fetched = u_dict(safe_y("GET", f"/servers/{sid}"), "server")
+                    sname = (fetched.get("name") if isinstance(fetched, dict) else None) or f"Server ({sid})"
+                    txt = cur["w_msg"].replace("{user}", f"@{sess['username']}").replace("{server}", sname)
+                    ok, err = send_msg_smart(
+                        target_ch,
+                        title=cur["w_title"],
+                        description=txt,
+                        color_hex=cur["w_color"],
+                        image_url=cur["w_banner"],
+                        footer="Test Welcome Card • TicketMint",
+                    )
+                    if not ok:
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=welcome&err={urllib.parse.quote(err)}")
+                    return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=welcome&sent=1")
                 return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=welcome&saved=1")
             if tab == "announce":
                 ann_cid = data.get("ann_channel", [""])[0].strip()
@@ -578,19 +737,32 @@ class handler(BaseHTTPRequestHandler):
                     return self.redir(
                         f"/dashboard?server={urllib.parse.quote(sid)}&tab=announce&err={urllib.parse.quote('Choose a channel and enter a message.')}"
                     )
-                safe_y(
-                    "POST",
-                    f"/channels/{ann_cid}/messages",
-                    {
-                        "content": ping,
-                        "embeds": [{
-                            "description": f"## {ann_title}\n\n{ann_body}",
-                            "color": 0xFF7A00,
-                            "footer": {"text": f"Announced by @{sess['username']} • TicketMint"},
-                        }],
-                    },
+                ok, err = send_msg_smart(
+                    ann_cid,
+                    content=ping,
+                    title=ann_title,
+                    description=ann_body,
+                    color_hex="#ff7a00",
+                    footer=f"Announced by @{sess['username']} • TicketMint",
                 )
+                if not ok:
+                    return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=announce&err={urllib.parse.quote(err)}")
                 return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=announce&sent=1")
+            if tab == "automod":
+                cur["anti_link"] = bool(data.get("anti_link"))
+                cur["word_filter"] = bool(data.get("word_filter"))
+                try:
+                    cur["max_tickets"] = max(1, min(10, int(data.get("max_tickets", ["2"])[0] or 2)))
+                except Exception:
+                    cur["max_tickets"] = 2
+                try:
+                    cur["ticket_cooldown"] = max(0, min(3600, int(data.get("ticket_cooldown", ["30"])[0] or 0)))
+                except Exception:
+                    cur["ticket_cooldown"] = 30
+                cur["blocked_words"] = data.get("blocked_words", [""])[0].strip()
+                all_cfg[sid] = cur
+                save_all_cfg(all_cfg)
+                return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=automod&saved=1")
             if tab == "commands":
                 enabled = set(data.get("enabled_cmds", []))
                 cur["disabled_cmds"] = [k for k, _, _ in ALL_COMMANDS if k not in enabled]
