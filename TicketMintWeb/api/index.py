@@ -55,14 +55,21 @@ def clean_err(raw_text):
 def r_cmd(*args):
     if not REDIS_URL or not REDIS_TOKEN:
         return None
-    req = urllib.request.Request(
-        REDIS_URL,
-        data=json.dumps(list(args)).encode("utf-8"),
-        headers={"Authorization": f"Bearer {REDIS_TOKEN}", "Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=6) as resp:
-        return json.loads(resp.read().decode("utf-8")).get("result")
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(
+                REDIS_URL,
+                data=json.dumps(list(args)).encode("utf-8"),
+                headers={"Authorization": f"Bearer {REDIS_TOKEN}", "Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return json.loads(resp.read().decode("utf-8")).get("result")
+        except Exception:
+            if attempt == 0:
+                time.sleep(0.15)
+            else:
+                return None
 
 
 def load_all_cfg():
@@ -94,14 +101,33 @@ def y_api(method, path, body=None, bearer=None, base_url=None):
     hdrs = {
         "Authorization": f"Bearer {bearer or BOT_TOKEN}",
         "Content-Type": "application/json",
-        "User-Agent": "TicketMintWeb/1.0",
+        "User-Agent": "TicketMintWeb/2.0",
     }
     data = json.dumps(body).encode("utf-8") if body is not None else None
     root = (base_url or API_BASE).rstrip("/")
-    req = urllib.request.Request(f"{root}{path}", data=data, headers=hdrs, method=method)
-    with urllib.request.urlopen(req, timeout=6) as resp:
-        txt = resp.read().decode("utf-8")
-        return json.loads(txt) if txt else {}
+    last_exc = None
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(f"{root}{path}", data=data, headers=hdrs, method=method)
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                txt = resp.read().decode("utf-8")
+                return json.loads(txt) if txt else {}
+        except urllib.error.HTTPError as he:
+            last_exc = he
+            if he.code in (429, 500, 502, 503, 504) and attempt == 0:
+                retry_hdr = he.headers.get("Retry-After") if he.headers else None
+                try:
+                    time.sleep(min(1.5, max(0.2, float(retry_hdr or 0.25))))
+                except Exception:
+                    time.sleep(0.25)
+                continue
+            raise
+        except Exception as e:
+            last_exc = e
+            if attempt == 0:
+                time.sleep(0.2)
+                continue
+            raise last_exc
 
 
 def safe_y(method, path, body=None):
@@ -109,6 +135,97 @@ def safe_y(method, path, body=None):
         return y_api(method, path, body)
     except Exception:
         return {}
+
+
+def pick_name(obj, fallback=""):
+    if not isinstance(obj, dict):
+        return fallback
+    for k in ("name", "title", "label", "category_name", "parent_name", "display_name"):
+        v = obj.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return fallback
+
+
+def is_cat_item(c):
+    k = str(c.get("kind", "")).lower()
+    t = str(c.get("type", "")).lower()
+    return k in ("category", "folder", "group") or t in ("category", "folder", "group", "4") or bool(c.get("is_category"))
+
+
+def is_voice_item(c):
+    k = str(c.get("kind", "")).lower()
+    t = str(c.get("type", "")).lower()
+    return k in ("voice", "stage") or t in ("voice", "stage", "2", "13")
+
+
+def sync_server_metadata(sid, existing_meta=None):
+    meta = dict(existing_meta or {})
+    roles = meta.get("roles", [])
+    chs = meta.get("channels", [])
+    extra_cats = list(meta.get("categories", [])) if isinstance(meta.get("categories"), list) else []
+
+    srv_full = safe_y("GET", f"/servers/{sid}")
+    fetched = srv_full.get("server", srv_full) if isinstance(srv_full, dict) else {}
+
+    r_res = safe_y("GET", f"/servers/{sid}/roles")
+    r_list = r_res if isinstance(r_res, list) else (r_res.get("roles", []) if isinstance(r_res, dict) else [])
+    if r_list:
+        roles = r_list
+
+    c_res = safe_y("GET", f"/servers/{sid}/channels")
+    c_list = c_res if isinstance(c_res, list) else (c_res.get("channels", []) if isinstance(c_res, dict) else [])
+    if c_list:
+        chs = c_list
+
+    for src in (c_res, fetched, srv_full, safe_y("GET", f"/servers/{sid}/categories")):
+        if isinstance(src, dict):
+            for key in ("categories", "folders", "groups"):
+                if isinstance(src.get(key), list):
+                    extra_cats.extend(src[key])
+
+    cat_map = {}
+    for ec in extra_cats:
+        if isinstance(ec, dict) and ec.get("id"):
+            cid = str(ec["id"])
+            cname = pick_name(ec)
+            if cname and not re.match(r"^Category \([0-9a-f]{6,}\)$", cname, re.I):
+                cat_map[cid] = cname
+
+    children_by_parent = {}
+    for c in chs:
+        if isinstance(c, dict):
+            if is_cat_item(c) and c.get("id"):
+                cid = str(c["id"])
+                cname = pick_name(c)
+                if cname and cid not in cat_map:
+                    cat_map[cid] = cname
+            pid = c.get("parent_id") or c.get("category_id") or c.get("parentId")
+            if pid:
+                pid_s = str(pid)
+                children_by_parent.setdefault(pid_s, []).append(f"#{c.get('name', 'channel')}")
+                pname = c.get("parent_name") or c.get("category_name") or c.get("parentName")
+                if isinstance(pname, str) and pname.strip() and pid_s not in cat_map:
+                    cat_map[pid_s] = pname.strip()
+
+    for pid_s, child_names in children_by_parent.items():
+        if pid_s not in cat_map:
+            ch_info = safe_y("GET", f"/channels/{pid_s}")
+            ch_obj = ch_info.get("channel", ch_info) if isinstance(ch_info, dict) else {}
+            cname = pick_name(ch_obj)
+            if cname:
+                cat_map[pid_s] = cname
+        if pid_s not in cat_map:
+            preview = ", ".join(child_names[:2])
+            if len(child_names) > 2:
+                preview += f" +{len(child_names) - 2}"
+            cat_map[pid_s] = f"Category ({preview})"
+
+    cat_chs = [{"id": cid, "name": cname} for cid, cname in cat_map.items()]
+    new_meta = {"roles": roles, "channels": chs, "categories": cat_chs}
+    if roles or chs or cat_chs:
+        r_cmd("SET", f"ticketmint:meta:{sid}", json.dumps(new_meta))
+    return new_meta, fetched if isinstance(fetched, dict) else {}
 
 
 def post_raw_message(cid, payload):
@@ -275,34 +392,44 @@ def post_panel(cid):
     return True, ("" if queued else "Outbox queue unavailable")
 
 
-# Ultra-lightweight zero-GPU CSS (no shadows, blur, filters, or heavy animations for potato PCs)
+# Smooth GPU-friendly animations (transform + background-color only)
 CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#0b0d12;color:#f3f4f6;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;min-height:100vh;display:flex;flex-direction:column}
 a{text-decoration:none;color:inherit}
 .nav{display:flex;justify-content:space-between;align-items:center;padding:14px 20px;border-bottom:1px solid #1c202b;background:#0e1118}
-.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:19px;color:#fff}
+.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:19px;color:#fff;transition:transform .12s ease}
+.brand:hover{transform:translateY(-1px)}
 .badge{background:#ff7a00;color:#000;padding:3px 8px;border-radius:6px;font-weight:900;font-size:13px}
 .nav-links{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.btn{padding:9px 15px;border-radius:8px;font-weight:700;font-size:13px;cursor:pointer;border:none;display:inline-flex;align-items:center;gap:6px}
+.btn{padding:9px 15px;border-radius:8px;font-weight:700;font-size:13px;cursor:pointer;border:none;display:inline-flex;align-items:center;gap:6px;transition:transform .12s ease,background-color .14s ease,border-color .14s ease}
+.btn:hover{transform:translateY(-1px)}
+.btn:active{transform:translateY(1px) scale(.98)}
 .btn-orange{background:#ff7a00;color:#000}
+.btn-orange:hover{background:#ff8c24}
 .btn-dark{background:#181c26;color:#fff;border:1px solid #282e3d}
+.btn-dark:hover{background:#202634;border-color:#ff7a00}
 .hero{max-width:820px;margin:48px auto;padding:0 18px;text-align:center}
 .hero h1{font-size:clamp(28px,5vw,48px);line-height:1.12;margin-bottom:14px;font-weight:900}
 .hero h1 span{color:#ff7a00}
 .hero p{color:#9ca3af;font-size:16px;max-width:560px;margin:0 auto 24px;line-height:1.5}
 .hero-btns{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px;max-width:940px;margin:28px auto;padding:0 18px}
-.card{background:#12151e;border:1px solid #1f2432;border-radius:12px;padding:18px}
-.srv-row{display:flex;align-items:center;justify-content:space-between;background:#12151e;border:1px solid #1f2432;border-radius:12px;padding:15px 18px;margin-bottom:10px}
+.card{background:#12151e;border:1px solid #1f2432;border-radius:12px;padding:18px;transition:transform .14s ease,border-color .14s ease}
+.card:hover{transform:translateY(-2px);border-color:#ff7a00}
+.srv-row{display:flex;align-items:center;justify-content:space-between;background:#12151e;border:1px solid #1f2432;border-radius:12px;padding:15px 18px;margin-bottom:10px;transition:transform .12s ease,border-color .14s ease,background-color .14s ease}
+.srv-row:hover{transform:translateX(3px);border-color:#ff7a00;background:#161a26}
+.srv-row:active{transform:scale(.99)}
 .srv-left{display:flex;align-items:center;gap:14px}
 .srv-ico{width:42px;height:42px;border-radius:10px;background:#1b2030;border:1px solid #2a3147;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:17px;color:#fff;overflow:hidden;flex-shrink:0}
 .srv-ico img{width:100%;height:100%;object-fit:cover}
 .wrap{max-width:960px;width:100%;margin:24px auto;padding:0 16px;flex:1}
-.layout{display:grid;grid-template-columns:205px 1fr;gap:18px}
+.layout{display:grid;grid-template-columns:215px 1fr;gap:18px}
 @media(max-width:740px){.layout{grid-template-columns:1fr}}
 .side{background:#12151e;border:1px solid #1f2432;border-radius:12px;padding:10px;height:fit-content}
-.side a{display:block;padding:10px 12px;border-radius:8px;color:#9ca3af;font-weight:600;margin-bottom:3px;font-size:13px}
+.side a,.side button.side-btn{display:block;width:100%;text-align:left;background:transparent;border:none;font-family:inherit;cursor:pointer;padding:10px 12px;border-radius:8px;color:#9ca3af;font-weight:600;margin-bottom:3px;font-size:13px;transition:transform .12s ease,background-color .14s ease,color .14s ease}
+.side a:hover,.side button.side-btn:hover{color:#fff;background:#181c28;transform:translateX(2px)}
+.side a:active,.side button.side-btn:active{transform:scale(.98)}
 .side a.act{background:#ff7a0022;color:#ff7a00;border-left:3px solid #ff7a00}
 .side hr{border:none;border-top:1px solid #1c202b;margin:7px 0}
 .panel{background:#12151e;border:1px solid #1f2432;border-radius:12px;padding:20px}
@@ -310,15 +437,19 @@ a{text-decoration:none;color:inherit}
 .field:last-child{border-bottom:none}
 .field label{display:block;font-weight:700;margin-bottom:4px;font-size:14px}
 .field small{display:block;color:#9ca3af;margin-bottom:8px;font-size:12px}
-select,input[type=text],input[type=number],textarea{width:100%;padding:10px 11px;border-radius:8px;background:#0b0d12;color:#fff;border:1px solid #2a3040;font-size:13px;font-family:inherit}
+select,input[type=text],input[type=number],textarea{width:100%;padding:10px 11px;border-radius:8px;background:#0b0d12;color:#fff;border:1px solid #2a3040;font-size:13px;font-family:inherit;transition:border-color .14s ease}
+select:focus,input:focus,textarea:focus{outline:none;border-color:#ff7a00}
 textarea{min-height:96px;resize:vertical}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 @media(max-width:600px){.row2{grid-template-columns:1fr}}
 .pills{display:flex;flex-wrap:wrap;gap:7px}
 .pill input{display:none}
-.pill span{display:inline-block;padding:6px 12px;border-radius:999px;background:#0b0d12;border:1px solid #2a3040;font-size:12px;font-weight:600;cursor:pointer;color:#cbd5e1}
+.pill span{display:inline-block;padding:6px 12px;border-radius:999px;background:#0b0d12;border:1px solid #2a3040;font-size:12px;font-weight:600;cursor:pointer;color:#cbd5e1;transition:transform .11s ease,background-color .14s ease,border-color .14s ease}
+.pill span:hover{transform:translateY(-1px);border-color:#ff7a00}
+.pill span:active{transform:scale(.96)}
 .pill input:checked+span{background:#ff7a00;color:#000;border-color:#ff7a00}
-.cmd-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 12px;border-radius:9px;background:#0b0d12;border:1px solid #1f2432;margin-bottom:8px}
+.cmd-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 12px;border-radius:9px;background:#0b0d12;border:1px solid #1f2432;margin-bottom:8px;transition:border-color .14s ease}
+.cmd-row:hover{border-color:#2e364a}
 .chk-line{display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:600;font-size:13px}
 .chk-line input{width:16px;height:16px;accent-color:#ff7a00}
 .preview-box{background:#0b0d12;border:1px solid #242a3a;border-left:4px solid #ff7a00;border-radius:9px;padding:12px 14px;margin-top:8px}
@@ -327,6 +458,21 @@ textarea{min-height:96px;resize:vertical}
 .stat-box{background:#0b0d12;border:1px solid #1f2432;border-radius:9px;padding:11px}
 .stat-num{font-size:20px;font-weight:900;color:#ff7a00}
 .stat-lbl{font-size:11px;color:#9ca3af;margin-top:2px}
+"""
+
+TINY_JS = """
+<script>
+document.addEventListener('submit',function(e){
+  var f=e.target;
+  if(!f||f.tagName!=='FORM')return;
+  var sub=e.submitter||f.querySelector('button[type=submit],button:not([type=button])');
+  if(sub&&!sub.dataset.busy){
+    sub.dataset.busy='1';
+    sub.style.opacity='0.75';
+    setTimeout(function(){sub.disabled=true;},0);
+  }
+});
+</script>
 """
 
 
@@ -341,7 +487,7 @@ def page(title, body, user=None):
         f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<title>{esc(title)}</title><style>{CSS}</style></head><body>"
         f"<div class='nav'><a href='/' class='brand'><span class='badge'>TM</span> TicketMint</a><div class='nav-links'>{right}</div></div>"
-        f"{body}</body></html>"
+        f"{body}{TINY_JS}</body></html>"
     )
 
 
@@ -427,7 +573,7 @@ class handler(BaseHTTPRequestHandler):
                             "code": code,
                             "redirect_uri": REDIR_URI,
                         }).encode("utf-8"),
-                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/1.0"},
+                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/2.0"},
                     ),
                     (
                         json.dumps({
@@ -437,7 +583,7 @@ class handler(BaseHTTPRequestHandler):
                             "code": code,
                             "redirect_uri": REDIR_URI,
                         }).encode("utf-8"),
-                        {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/1.0"},
+                        {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/2.0"},
                     ),
                 ]
                 for b_data, hdrs in attempts:
@@ -457,7 +603,7 @@ class handler(BaseHTTPRequestHandler):
                         try:
                             me_req = urllib.request.Request(
                                 f"https://{Y_HOST}{ep}",
-                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/1.0"},
+                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/2.0"},
                             )
                             cand = json.loads(urllib.request.urlopen(me_req, timeout=6).read().decode("utf-8"))
                             if isinstance(cand, dict):
@@ -540,14 +686,19 @@ class handler(BaseHTTPRequestHandler):
                 pass
 
             need_refresh = bool(qs.get("refresh")) or not meta.get("channels")
-            srv_full = safe_y("GET", f"/servers/{sel_id}") if (need_refresh or not srv_obj) else {}
-            fetched = u_dict(srv_full, "server")
-            if not srv_obj:
+            fetched = {}
+            if need_refresh:
+                meta, fetched = sync_server_metadata(sel_id, meta)
+            elif not srv_obj:
+                srv_full = safe_y("GET", f"/servers/{sel_id}")
+                fetched = u_dict(srv_full, "server")
                 if fetched and fetched.get("id") and not is_admin(sel_id, sess["id"]):
                     return self.redir("/dashboard")
+
+            if not srv_obj:
                 srv_obj = fetched if fetched and fetched.get("id") else {"id": sel_id, "name": f"Server ({sel_id})"}
-            srv_name = (fetched.get("name") if isinstance(fetched, dict) else None) or srv_obj.get("name", f"Server ({sel_id})")
-            m_count = (fetched.get("member_count") if isinstance(fetched, dict) else None) or srv_obj.get("member_count") or 5
+            srv_name = fetched.get("name") or srv_obj.get("name", f"Server ({sel_id})")
+            m_count = fetched.get("member_count") or srv_obj.get("member_count") or 5
             sc = get_scfg(sel_id)
             tab = qs.get("tab", ["tickets"])[0].strip().lower()
             if tab not in ("tickets", "welcome", "announce", "automod", "commands", "presets"):
@@ -555,82 +706,11 @@ class handler(BaseHTTPRequestHandler):
 
             roles = meta.get("roles", [])
             chs = meta.get("channels", [])
-            extra_cats = meta.get("categories", []) if isinstance(meta, dict) else []
-
-            if need_refresh or not roles:
-                roles = u_list(safe_y("GET", f"/servers/{sel_id}/roles"), "roles") or roles
-            if need_refresh or not chs:
-                chs_raw = safe_y("GET", f"/servers/{sel_id}/channels")
-                chs = u_list(chs_raw, "channels") or chs
-                if isinstance(chs_raw, dict) and isinstance(chs_raw.get("categories"), list):
-                    extra_cats.extend(chs_raw["categories"])
-
-            def pick_name(obj, fallback=""):
-                if not isinstance(obj, dict):
-                    return fallback
-                for k in ("name", "title", "label", "category_name", "parent_name", "display_name"):
-                    v = obj.get(k)
-                    if isinstance(v, str) and v.strip():
-                        return v.strip()
-                return fallback
-
-            def is_cat_item(c):
-                k = str(c.get("kind", "")).lower()
-                t = str(c.get("type", "")).lower()
-                return k in ("category", "folder", "group") or t in ("category", "folder", "group", "4") or bool(c.get("is_category"))
-
-            def is_voice_item(c):
-                k = str(c.get("kind", "")).lower()
-                t = str(c.get("type", "")).lower()
-                return k in ("voice", "stage") or t in ("voice", "stage", "2", "13")
+            cat_chs = meta.get("categories", [])
 
             txt_chs = [c for c in chs if isinstance(c, dict) and not is_cat_item(c) and not is_voice_item(c)]
             if not txt_chs:
                 txt_chs = [c for c in chs if isinstance(c, dict) and not is_cat_item(c)]
-
-            cat_map = {}
-            for ec in extra_cats:
-                if isinstance(ec, dict) and ec.get("id"):
-                    cid = str(ec["id"])
-                    cname = pick_name(ec)
-                    if cname and not re.match(r"^Category \([0-9a-f]{6,}\)$", cname, re.I):
-                        cat_map[cid] = cname
-
-            children_by_parent = {}
-            for c in chs:
-                if isinstance(c, dict):
-                    if is_cat_item(c) and c.get("id"):
-                        cid = str(c["id"])
-                        cname = pick_name(c)
-                        if cname and cid not in cat_map:
-                            cat_map[cid] = cname
-                    pid = c.get("parent_id") or c.get("category_id") or c.get("parentId")
-                    if pid:
-                        pid_s = str(pid)
-                        children_by_parent.setdefault(pid_s, []).append(f"#{c.get('name', 'channel')}")
-                        pname = c.get("parent_name") or c.get("category_name") or c.get("parentName")
-                        if isinstance(pname, str) and pname.strip() and pid_s not in cat_map:
-                            cat_map[pid_s] = pname.strip()
-
-            for pid_s, child_names in children_by_parent.items():
-                if pid_s not in cat_map:
-                    ch_info = u_dict(safe_y("GET", f"/channels/{pid_s}"), "channel")
-                    cname = pick_name(ch_info)
-                    if cname:
-                        cat_map[pid_s] = cname
-                if pid_s not in cat_map:
-                    preview = ", ".join(child_names[:2])
-                    if len(child_names) > 2:
-                        preview += f" +{len(child_names) - 2}"
-                    cat_map[pid_s] = f"Category ({preview})"
-
-            cat_chs = [{"id": cid, "name": cname} for cid, cname in cat_map.items()]
-
-            if need_refresh and (roles or chs or cat_chs):
-                try:
-                    r_cmd("SET", f"ticketmint:meta:{sel_id}", json.dumps({"roles": roles, "channels": chs, "categories": cat_chs}))
-                except Exception:
-                    pass
 
             def ch_opts(items, selected_id, empty_label, prefix="#"):
                 out = [f"<option value=''>{esc(empty_label)}</option>"]
@@ -641,7 +721,9 @@ class handler(BaseHTTPRequestHandler):
                 return "".join(out)
 
             notice = ""
-            if qs.get("saved"):
+            if qs.get("synced"):
+                notice = "<div style='background:#16a34a22;border:1px solid #16a34a;color:#4ade80;padding:9px 13px;border-radius:8px;margin-bottom:14px;font-size:13px'>Synced channels, roles &amp; categories!</div>"
+            elif qs.get("saved"):
                 notice = "<div style='background:#16a34a22;border:1px solid #16a34a;color:#4ade80;padding:9px 13px;border-radius:8px;margin-bottom:14px;font-size:13px'>Saved changes!</div>"
             elif qs.get("sent"):
                 notice = "<div style='background:#16a34a22;border:1px solid #16a34a;color:#4ade80;padding:9px 13px;border-radius:8px;margin-bottom:14px;font-size:13px'>Dispatched to your server channel!</div>"
@@ -664,7 +746,7 @@ class handler(BaseHTTPRequestHandler):
                 pills = "".join(
                     f"<label class='pill'><input type='checkbox' name='roles' value='{esc(r['id'])}' {'checked' if r['id'] in sc['roles'] else ''}><span>{esc(r.get('name', 'Role'))}</span></label>"
                     for r in non_everyone_roles
-                ) or "<span style='color:#9ca3af;font-size:12px'>Click Sync Channels & Roles if roles don't appear yet.</span>"
+                ) or "<span style='color:#9ca3af;font-size:12px'>Click Sync Channels &amp; Roles if roles don't appear yet.</span>"
                 cho = ch_opts(txt_chs, sc["dash"], "-- Select Ticket Panel Channel --", "#")
                 cao = ch_opts(cat_chs, sc["cat"], "None (Optional)", "")
                 lgo = ch_opts(txt_chs, sc["logs"], "None (Optional)", "#")
@@ -676,9 +758,9 @@ class handler(BaseHTTPRequestHandler):
                     f"<div class='field'><label>Ticket Category (Optional)</label><small>Category where new private ticket rooms are placed.</small><select name='cat'>{cao}</select></div>"
                     f"<div class='field'><label>Ticket Logs &amp; Transcripts Channel (Optional)</label><small>Receives open/close logs and ticket transcripts.</small><select name='logs'>{lgo}</select></div>"
                     f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'>"
-                    f"<button name='act' value='save' class='btn btn-orange'>Save Changes</button>"
-                    f"<button name='act' value='post' class='btn btn-dark'>Save &amp; Post Ticket Panel</button>"
-                    f"<button name='act' value='modping' class='btn btn-dark'>Send Staff Ping</button></div></form>"
+                    f"<button type='submit' name='act' value='save' class='btn btn-orange'>Save Changes</button>"
+                    f"<button type='submit' name='act' value='post' class='btn btn-dark'>Save &amp; Post Ticket Panel</button>"
+                    f"<button type='submit' name='act' value='modping' class='btn btn-dark'>Send Staff Ping</button></div></form>"
                 )
             elif tab == "welcome":
                 w_cho = ch_opts(txt_chs, sc["welcome"], "Disabled (No Welcome Channel)", "#")
@@ -708,8 +790,8 @@ class handler(BaseHTTPRequestHandler):
                     f"<div class='field'><label>Goodbye Channel (Optional)</label><small>Channel where goodbye messages are posted when a member leaves.</small><select name='goodbye'>{g_cho}</select></div>"
                     f"<div class='field'><label>Goodbye Message</label><small>Supports <b>{{user}}</b>, <b>{{server}}</b>, and <b>{{member_count}}</b>.</small><input type='text' name='g_msg' value='{esc(sc['g_msg'])}' placeholder='{{user}} just left {{server}}. We now have {{member_count}} members.'></div>"
                     f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'>"
-                    f"<button name='act' value='save' class='btn btn-orange'>Save Welcome &amp; Goodbye</button>"
-                    f"<button name='act' value='test_welcome' class='btn btn-dark'>Send Test Welcome Card</button></div></form>"
+                    f"<button type='submit' name='act' value='save' class='btn btn-orange'>Save Welcome &amp; Goodbye</button>"
+                    f"<button type='submit' name='act' value='test_welcome' class='btn btn-dark'>Send Test Welcome Card</button></div></form>"
                 )
             elif tab == "announce":
                 ann_cho = ch_opts(txt_chs, sc["dash"], "-- Select Target Channel --", "#")
@@ -719,7 +801,7 @@ class handler(BaseHTTPRequestHandler):
                     f"<div class='field'><label>Announcement Title</label><small>Displayed as a bold heading.</small><input type='text' name='ann_title' placeholder='Server Update!' required></div>"
                     f"<div class='field'><label>Announcement Message</label><small>Write your announcement details below.</small><textarea name='ann_body' placeholder='Hey everyone! Here is what is new...' required></textarea></div>"
                     f"<div class='field'><label class='chk-line'><input type='checkbox' name='ann_everyone' value='1'><span>Ping @everyone above the announcement</span></label></div>"
-                    f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button name='act' value='announce' class='btn btn-orange'>Send Announcement</button></div></form>"
+                    f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='announce' class='btn btn-orange'>Send Announcement</button></div></form>"
                 )
             elif tab == "automod":
                 panel_html = (
@@ -736,19 +818,20 @@ class handler(BaseHTTPRequestHandler):
                     f"<div><label>Link Warning Message</label><small>Sent privately to the user. Use <b>{{user}}</b>.</small><input type='text' name='warn_link_msg' value='{esc(sc['warn_link_msg'])}' placeholder='{{user}}, links are not allowed in this channel.'></div></div>"
                     f"<div class='field row2'><div><label>Max Open Tickets Per User</label><small>Prevent users from opening too many rooms at once.</small><input type='number' name='max_tickets' min='1' max='10' value='{esc(sc['max_tickets'])}'></div>"
                     f"<div><label>Ticket Cooldown (Seconds)</label><small>Wait time between opening tickets (0 = off).</small><input type='number' name='ticket_cooldown' min='0' max='3600' value='{esc(sc['ticket_cooldown'])}'></div></div>"
-                    f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button name='act' value='save' class='btn btn-orange'>Save Protection Rules</button></div></form>"
+                    f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='save' class='btn btn-orange'>Save Protection Rules</button></div></form>"
                 )
             elif tab == "presets":
                 panel_html = (
-                    f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='presets'>"
                     f"<div class='field'><label>1-Click Setup Presets</label><small>Apply recommended settings for your community in one click.</small>"
-                    f"<div class='cmd-row'><div><div style='font-weight:700;font-size:13px'>Gaming Community</div><div style='color:#9ca3af;font-size:12px'>Balanced anti-link + word filter, welcome cards enabled, 2 max tickets</div></div>"
-                    f"<button name='act' value='preset_gaming' class='btn btn-orange'>Apply</button></div>"
-                    f"<div class='cmd-row'><div><div style='font-weight:700;font-size:13px'>Strict Safe Chat</div><div style='color:#9ca3af;font-size:12px'>Anti-link + anti-spam + word filter active, 60s ticket cooldown, 1 max ticket</div></div>"
-                    f"<button name='act' value='preset_strict' class='btn btn-dark'>Apply</button></div>"
-                    f"<div class='cmd-row'><div><div style='font-weight:700;font-size:13px'>Chill / Open Server</div><div style='color:#9ca3af;font-size:12px'>Links allowed, word filter + anti-spam active, fast 15s ticket cooldown</div></div>"
-                    f"<button name='act' value='preset_chill' class='btn btn-dark'>Apply</button></div>"
-                    f"</div></form>"
+                    f"<form method='POST' action='/save' class='cmd-row'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='presets'>"
+                    f"<div><div style='font-weight:700;font-size:13px'>Gaming Community</div><div style='color:#9ca3af;font-size:12px'>Balanced anti-link + word filter, welcome cards enabled, 2 max tickets</div></div>"
+                    f"<button type='submit' name='act' value='preset_gaming' class='btn btn-orange'>Apply</button></form>"
+                    f"<form method='POST' action='/save' class='cmd-row'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='presets'>"
+                    f"<div><div style='font-weight:700;font-size:13px'>Strict Safe Chat</div><div style='color:#9ca3af;font-size:12px'>Anti-link + anti-spam + word filter active, 60s ticket cooldown, 1 max ticket</div></div>"
+                    f"<button type='submit' name='act' value='preset_strict' class='btn btn-dark'>Apply</button></form>"
+                    f"<form method='POST' action='/save' class='cmd-row'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='presets'>"
+                    f"<div><div style='font-weight:700;font-size:13px'>Chill / Open Server</div><div style='color:#9ca3af;font-size:12px'>Links allowed, word filter + anti-spam active, fast 15s ticket cooldown</div></div>"
+                    f"<button type='submit' name='act' value='preset_chill' class='btn btn-dark'>Apply</button></form></div>"
                 )
             else:
                 disabled = set(sc["disabled_cmds"])
@@ -761,7 +844,7 @@ class handler(BaseHTTPRequestHandler):
                 panel_html = (
                     f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='commands'>"
                     f"<div class='field'><label>Commands &amp; Tools</label><small>All commands are enabled by default in <b>{esc(srv_name)}</b>. Toggle any off if needed.</small>{cmd_items}</div>"
-                    f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button name='act' value='save' class='btn btn-orange'>Save Command Settings</button></div></form>"
+                    f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='save' class='btn btn-orange'>Save Command Settings</button></div></form>"
                 )
 
             side_links = (
@@ -771,7 +854,10 @@ class handler(BaseHTTPRequestHandler):
                 f"<a href='/dashboard?server={esc(sel_id)}&tab=automod' class='{'act' if tab=='automod' else ''}'>Auto-Mod &amp; Limits</a>"
                 f"<a href='/dashboard?server={esc(sel_id)}&tab=commands' class='{'act' if tab=='commands' else ''}'>Commands &amp; Tools</a>"
                 f"<a href='/dashboard?server={esc(sel_id)}&tab=presets' class='{'act' if tab=='presets' else ''}'>1-Click Presets</a>"
-                f"<hr><a href='/dashboard?server={esc(sel_id)}&tab={esc(tab)}&refresh=1'>Sync Channels &amp; Roles</a>"
+                f"<hr><form method='POST' action='/sync' style='margin:0'>"
+                f"<input type='hidden' name='server' value='{esc(sel_id)}'>"
+                f"<input type='hidden' name='tab' value='{esc(tab)}'>"
+                f"<button type='submit' class='side-btn'>Sync Channels &amp; Roles</button></form>"
                 f"<a href='/dashboard'>Switch Server</a>"
             )
             html_out = (
@@ -797,9 +883,26 @@ class handler(BaseHTTPRequestHandler):
         raw_body = self.rfile.read(length).decode("utf-8", errors="ignore")
         data = urllib.parse.parse_qs(raw_body)
         sess = self.get_sess()
+        u = urllib.parse.urlsplit(self.path)
+        path = u.path
         sid = data.get("server", [""])[0].strip()
         tab = data.get("tab", ["tickets"])[0].strip().lower()
+        if tab not in ("tickets", "welcome", "announce", "automod", "commands", "presets"):
+            tab = "tickets"
         act = data.get("act", ["save"])[0].strip().lower()
+
+        if sess and sid and path == "/sync":
+            existing_meta = {}
+            try:
+                mraw = r_cmd("GET", f"ticketmint:meta:{sid}")
+                if mraw:
+                    existing_meta = json.loads(mraw)
+            except Exception:
+                pass
+            sync_server_metadata(sid, existing_meta)
+            queue_outbox({"type": "sync_meta", "server_id": sid})
+            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab={urllib.parse.quote(tab)}&synced=1")
+
         if sess and sid:
             all_cfg = load_all_cfg()
             cur = get_scfg(sid)
