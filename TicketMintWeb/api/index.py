@@ -21,7 +21,7 @@ WARN_MUTE_THRESHOLD = 3
 WARN_MUTE_SECONDS = 2 * 60 * 60
 
 ALL_COMMANDS = [
-    ("roll", "/roll", "Roll a random number from 1 to 999 (or 1 to max)", False),
+    ("roll", "/roll", "Roll a random number with custom min and max (e.g. 1 100 or 999)", False),
     ("ticketpanel", "/ticketpanel", "Post the orange Open a Ticket panel", True),
     ("claimticket", "/claimticket", "Claim an open ticket room", True),
     ("ticketclose", "/ticketclose", "Close and log an active ticket", True),
@@ -29,6 +29,7 @@ ALL_COMMANDS = [
     ("setwelcomechannel", "/setwelcomechannel", "Set the automatic welcome channel", True),
     ("verifypanel", "/verifypanel", "Post a 1-click member verification panel", True),
     ("announce", "/announce", "Post styled announcements in chat", True),
+    ("poll", "/poll", "Create a poll with choices in a channel", False),
     ("warn", "/warn", "Warn a member (3 warnings = 2-hour mute)", True),
     ("clear", "/clear", "Bulk delete recent messages in a channel", True),
     ("slowmode", "/slowmode", "Set channel slowmode timer", True),
@@ -40,8 +41,9 @@ ALL_COMMANDS = [
     ("afk", "/afk", "Set an AFK status with an optional reason", False),
     ("serverinfo", "/serverinfo", "View server details and protection stats", False),
     ("userinfo", "/userinfo", "View a member's ID, roles, and staff status", False),
-    ("poll", "/poll", "Create a quick poll with choices", False),
 ]
+
+VALID_TABS = ("tickets", "welcome", "announce", "polls", "automod", "verification", "commands", "presets")
 
 
 def ordinal_num(n):
@@ -115,12 +117,25 @@ def format_ping_target(raw_ping, sid="", meta=None):
     p = str(raw_ping or "").strip()
     if not p:
         return ""
-    if p.lower() in ("@everyone", "everyone"):
+    low = p.lower()
+    if low in ("@everyone", "everyone"):
         return "@everyone"
-    if re.fullmatch(r"<@&\d+>", p) or re.fullmatch(r"<@\d+>", p):
+    if low in ("@here", "here"):
+        return "@here"
+    m_role = re.fullmatch(r"<@&([^>]+)>", p)
+    if m_role:
+        inner = m_role.group(1).strip()
+        if re.fullmatch(r"\d+", inner):
+            return f"<@&{inner}>"
+        p = inner
+    elif re.fullmatch(r"<@!?\d+>", p):
         return p
-    role_name_clean = p.lstrip("@").strip().lower()
-    if role_name_clean and sid:
+
+    role_name_clean = p.lstrip("@").strip()
+    if not role_name_clean:
+        return ""
+    role_lower = role_name_clean.lower()
+    if sid:
         m = meta if isinstance(meta, dict) else {}
         if not m:
             try:
@@ -135,9 +150,31 @@ def format_ping_target(raw_ping, sid="", meta=None):
             if isinstance(r, dict) and r.get("id"):
                 rid = str(r.get("id")).strip()
                 rname = str(r.get("name", "")).lstrip("@").strip().lower()
-                if rname and rname == role_name_clean and re.fullmatch(r"\d+", rid):
+                if rname and rname == role_lower and re.fullmatch(r"\d+", rid):
                     return f"<@&{rid}>"
-    return f"@{role_name_clean}" if role_name_clean else p
+    return f"@{role_name_clean}"
+
+
+def parse_roll_bounds(args_str):
+    txt = str(args_str or "").strip()
+    if not txt:
+        return 1, 999
+    nums = [int(n) for n in re.findall(r"-?\d+", txt)]
+    if len(nums) >= 2:
+        lo, hi = nums[0], nums[1]
+    elif len(nums) == 1:
+        lo, hi = 1, nums[0]
+    else:
+        return 1, 999
+    if lo == hi:
+        hi = lo + 1
+    elif lo > hi:
+        lo, hi = hi, lo
+    lo = max(-1000000000, min(1000000000, lo))
+    hi = max(-1000000000, min(1000000000, hi))
+    if lo == hi:
+        hi = lo + 1
+    return lo, hi
 
 
 def apply_user_warning(sid, target_raw, reason="", mod_user="Moderator"):
@@ -212,7 +249,7 @@ def y_api(method, path, body=None, bearer=None, base_url=None):
     hdrs = {
         "Authorization": f"Bearer {bearer or BOT_TOKEN}",
         "Content-Type": "application/json",
-        "User-Agent": "TicketMintWeb/2.8",
+        "User-Agent": "TicketMintWeb/3.0",
     }
     data = json.dumps(body).encode("utf-8") if body is not None else None
     root = (base_url or API_BASE).rstrip("/")
@@ -463,13 +500,62 @@ def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00
     return True, ("" if queued else "Outbox queue unavailable")
 
 
-def format_ticket_log_message(template, user_label, ticket_label, reason="", server_name="", claimer=""):
+def parse_poll_options(raw_opts):
+    if isinstance(raw_opts, list):
+        items = [str(x).strip() for x in raw_opts if str(x).strip()]
+    else:
+        txt = str(raw_opts or "").replace("\r\n", "\n").strip()
+        if "\n" in txt:
+            items = [line.strip(" -•*\t") for line in txt.split("\n")]
+        elif "|" in txt:
+            items = [part.strip(" -•*\t") for part in txt.split("|")]
+        elif "," in txt:
+            items = [part.strip(" -•*\t") for part in txt.split(",")]
+        else:
+            items = [txt.strip(" -•*\t")] if txt else []
+        items = [x for x in items if x]
+    if len(items) < 2:
+        items = items + ["Option 2"] if items else ["Yes", "No"]
+    return items[:10]
+
+
+def send_poll_smart(cid, question, options, ping="", author_name="Admin", sid=""):
+    if not cid:
+        return False, "No channel selected."
+    q_text = str(question or "").strip() or "Community Poll"
+    opts = parse_poll_options(options)
+    badges = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+    lines = [f"{badges[i]} **{opt}**" for i, opt in enumerate(opts)]
+    desc = "\n".join(lines) + f"\n\n-# Poll by @{author_name} • TicketMint"
+    ok, err = send_msg_smart(
+        cid,
+        content=desc,
+        ping=ping,
+        title=f"📊 {q_text}",
+        description=desc,
+        color_hex="#ff7a00",
+        footer=f"Poll by @{author_name} • TicketMint",
+        kind="poll",
+        extra={
+            "server_id": str(sid),
+            "question": q_text,
+            "options": opts,
+            "choices": opts,
+            "author": author_name,
+        },
+    )
+    return ok, err
+
+
+def format_ticket_log_message(template, user_label, ticket_label, reason="", server_name="", claimer="", subject="", details=""):
     txt = str(template or DEFAULT_OPEN_MSG)
     clean_reason = str(reason or "").strip() or "No reason provided"
     return (
         txt.replace("{user}", user_label or "Member")
         .replace("{ticket}", ticket_label or "ticket")
         .replace("{reason}", clean_reason)
+        .replace("{subject}", str(subject or clean_reason))
+        .replace("{details}", str(details or clean_reason))
         .replace("{server}", server_name or "Server")
         .replace("{claimer}", claimer or user_label or "Staff")
     )
@@ -577,19 +663,27 @@ def post_panel(cid, sid=""):
         }],
     }
     post_raw_message(cid, payload)
+    reason_val = sc.get("ticket_reason", "Support • General Inquiry")
     queued = queue_outbox({
         "type": "panel",
         "server_id": str(sid),
         "channel_id": str(cid),
-        "ticket_reason": sc.get("ticket_reason", "Support • General Inquiry"),
+        "category_id": str(sc.get("cat", "") or ""),
+        "logs_channel_id": str(sc.get("logs", "") or ""),
+        "mod_roles": sc.get("roles", []),
+        "ticket_reason": reason_val,
+        "reason": reason_val,
         "open_template": sc.get("ticket_open_msg", DEFAULT_OPEN_MSG),
         "close_template": sc.get("ticket_close_msg", DEFAULT_CLOSE_MSG),
+        "claim_template": sc.get("ticket_claim_msg", DEFAULT_CLAIM_MSG),
+        "capture_modal_inputs": True,
     })
     return True, ("" if queued else "Outbox queue unavailable")
 
 
 def post_verify_panel(cid, sname="Server", sid=""):
     bname = u_dict(safe_y("GET", "/me"), "bot").get("name", "TicketMint")
+    sc = get_scfg(sid) if sid else get_scfg("")
     payload = {
         "embeds": [{
             "title": f"Verify in {sname}",
@@ -603,8 +697,40 @@ def post_verify_panel(cid, sname="Server", sid=""):
         }],
     }
     post_raw_message(cid, payload)
-    queued = queue_outbox({"type": "verify_panel", "server_id": str(sid), "channel_id": str(cid), "server_name": sname})
+    queued = queue_outbox({
+        "type": "verify_panel",
+        "server_id": str(sid),
+        "channel_id": str(cid),
+        "verify_role": str(sc.get("verify_role", "") or ""),
+        "server_name": sname,
+    })
     return True, ("" if queued else "Outbox queue unavailable")
+
+
+SVG_LOGO_INLINE = (
+    "<svg class='brand-svg' viewBox='0 0 128 128' width='28' height='28' aria-hidden='true'>"
+    "<circle cx='64' cy='64' r='64' fill='#ff7a00'/>"
+    "<g transform='rotate(-42 64 64)'>"
+    "<rect x='22' y='38' width='84' height='52' rx='8' fill='#0e1118'/>"
+    "<circle cx='22' cy='64' r='9' fill='#ff7a00'/>"
+    "<circle cx='106' cy='64' r='9' fill='#ff7a00'/>"
+    "<path d='M48 64 L59 75 L80 52' fill='none' stroke='#ff7a00' stroke-width='9' stroke-linecap='round' stroke-linejoin='round'/>"
+    "</g></svg>"
+)
+
+FAVICON_DATA_URI = (
+    "data:image/svg+xml;base64,"
+    + base64.b64encode(
+        b"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'>"
+        b"<circle cx='64' cy='64' r='64' fill='#ff7a00'/>"
+        b"<g transform='rotate(-42 64 64)'>"
+        b"<rect x='22' y='38' width='84' height='52' rx='8' fill='#0e1118'/>"
+        b"<circle cx='22' cy='64' r='9' fill='#ff7a00'/>"
+        b"<circle cx='106' cy='64' r='9' fill='#ff7a00'/>"
+        b"<path d='M48 64 L59 75 L80 52' fill='none' stroke='#ff7a00' stroke-width='9' stroke-linecap='round' stroke-linejoin='round'/>"
+        b"</g></svg>"
+    ).decode("ascii")
+)
 
 
 CSS = """
@@ -614,7 +740,7 @@ a{text-decoration:none;color:inherit}
 .nav{display:flex;justify-content:space-between;align-items:center;padding:14px 20px;border-bottom:1px solid #1c202b;background:#0e1118}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:19px;color:#fff;transition:transform .12s ease}
 .brand:hover{transform:translateY(-1px)}
-.badge{background:#ff7a00;color:#000;padding:3px 8px;border-radius:6px;font-weight:900;font-size:13px}
+.brand-svg{width:28px;height:28px;border-radius:50%;flex-shrink:0;display:block}
 .nav-links{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .btn{padding:9px 15px;border-radius:8px;font-weight:700;font-size:13px;cursor:pointer;border:none;display:inline-flex;align-items:center;gap:6px;transition:transform .11s ease,background-color .12s ease,border-color .12s ease}
 .btn:hover{transform:translateY(-1px)}
@@ -737,8 +863,11 @@ def page(title, body, user=None):
     )
     return (
         f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<link rel='icon' type='image/svg+xml' href='{esc(FAVICON_DATA_URI)}'>"
+        f"<link rel='shortcut icon' href='{esc(FAVICON_DATA_URI)}'>"
+        f"<meta property='og:image' content='{esc(FAVICON_DATA_URI)}'>"
         f"<title>{esc(title)}</title><style>{CSS}</style></head><body>"
-        f"<div class='nav'><a href='/' class='brand'><span class='badge'>TM</span> TicketMint</a><div class='nav-links'>{right}</div></div>"
+        f"<div class='nav'><a href='/' class='brand'>{SVG_LOGO_INLINE} TicketMint</a><div class='nav-links'>{right}</div></div>"
         f"{body}{INSTANT_JS}</body></html>"
     )
 
@@ -833,7 +962,7 @@ class handler(BaseHTTPRequestHandler):
                             "code": code,
                             "redirect_uri": REDIR_URI,
                         }).encode("utf-8"),
-                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/2.8"},
+                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/3.0"},
                     ),
                     (
                         json.dumps({
@@ -843,7 +972,7 @@ class handler(BaseHTTPRequestHandler):
                             "code": code,
                             "redirect_uri": REDIR_URI,
                         }).encode("utf-8"),
-                        {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/2.8"},
+                        {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/3.0"},
                     ),
                 ]
                 for b_data, hdrs in attempts:
@@ -863,7 +992,7 @@ class handler(BaseHTTPRequestHandler):
                         try:
                             me_req = urllib.request.Request(
                                 f"https://{Y_HOST}{ep}",
-                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/2.8"},
+                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/3.0"},
                             )
                             cand = json.loads(urllib.request.urlopen(me_req, timeout=5).read().decode("utf-8"))
                             if isinstance(cand, dict):
@@ -966,8 +1095,7 @@ class handler(BaseHTTPRequestHandler):
             m_count = (fetched.get("member_count") if isinstance(fetched, dict) else None) or base_srv.get("member_count") or 5
             sc = get_scfg(sel_id)
             tab = qs.get("tab", ["tickets"])[0].strip().lower()
-            valid_tabs = ("tickets", "welcome", "announce", "automod", "verification", "commands", "presets")
-            if tab not in valid_tabs:
+            if tab not in VALID_TABS:
                 tab = "tickets"
 
             roles = meta.get("roles", []) if isinstance(meta.get("roles"), list) else []
@@ -994,7 +1122,7 @@ class handler(BaseHTTPRequestHandler):
             elif qs.get("saved"):
                 notice = "<div id='tm-notice' class='tm-toast' style='background:#16a34a22;border:1px solid #16a34a;color:#4ade80;padding:9px 13px;border-radius:8px;margin-bottom:14px;font-size:13px'>Saved changes!</div>"
             elif qs.get("sent"):
-                notice = "<div id='tm-notice' class='tm-toast' style='background:#16a34a22;border:1px solid #16a34a;color:#4ade80;padding:9px 13px;border-radius:8px;margin-bottom:14px;font-size:13px'>Announcement / action was sent!</div>"
+                notice = "<div id='tm-notice' class='tm-toast' style='background:#16a34a22;border:1px solid #16a34a;color:#4ade80;padding:9px 13px;border-radius:8px;margin-bottom:14px;font-size:13px'>Action / message / poll was sent!</div>"
             elif qs.get("err"):
                 notice = f"<div id='tm-notice' class='tm-toast' style='background:#dc262622;border:1px solid #dc2626;color:#f87171;padding:9px 13px;border-radius:8px;margin-bottom:14px;font-size:13px'>{esc(clean_err(qs.get('err', ['Error'])[0]))}</div>"
 
@@ -1096,10 +1224,22 @@ class handler(BaseHTTPRequestHandler):
                 f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
                 f"<div class='field'><label>Target Channel</label><small>Choose where TicketMint should post this announcement.</small><select name='ann_channel' required>{ann_cho}</select></div>"
                 f"<div class='field row2'><div><label>Announcement Title</label><small>Displayed as a bold heading.</small><input type='text' name='ann_title' value='{esc(sc['announce_default_title'])}' placeholder='Server Update!' required></div>"
-                f"<div><label>Custom Ping Target (Optional)</label><small>E.g. @everyone, @RoleName, or leave blank ({esc(sc['announce_ping'] or 'none')}).</small><input type='text' name='ann_custom_ping' value='{esc(sc['announce_ping'])}' placeholder='@everyone'></div></div>"
+                f"<div><label>Custom Ping Target (Optional)</label><small>E.g. @everyone, @member, or leave blank ({esc(sc['announce_ping'] or 'none')}).</small><input type='text' name='ann_custom_ping' value='{esc(sc['announce_ping'])}' placeholder='@everyone'></div></div>"
                 f"<div class='field'><label>Announcement Message</label><small>Write your announcement details below.</small><textarea name='ann_body' placeholder='Hey everyone! Here is what is new...' required></textarea></div>"
                 f"<div class='field'><label class='chk-line'><input type='checkbox' name='ann_everyone' value='1'><span>Override with @everyone above the announcement</span></label></div>"
                 f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='announce' class='btn btn-orange'>Send Announcement</button></div></form></div>"
+            )
+
+            poll_cho = ch_opts(txt_chs, sc["dash"], "-- Select Poll Channel --", "#")
+            polls_pane = (
+                f"<div class='tab-pane {'act' if tab=='polls' else ''}' data-pane='polls'>"
+                f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='polls'>"
+                f"<div class='field row2'><div><label>Poll Channel</label><small>Channel where the poll will be posted.</small><select name='poll_channel' required>{poll_cho}</select></div>"
+                f"<div><label>Custom Ping Target (Optional)</label><small>E.g. @everyone, @member, or leave blank.</small><input type='text' name='poll_ping' value='{esc(sc['announce_ping'])}' placeholder='@member'></div></div>"
+                f"<div class='field'><label>Poll Question</label><small>What are members voting on?</small><input type='text' name='poll_question' placeholder='Which update should we drop next?' required></div>"
+                f"<div class='field'><label>Poll Options (One Per Line or Separated by | or ,)</label><small>Add up to 10 choices. Example: Option 1 | Option 2 | Option 3</small>"
+                f"<textarea name='poll_options' placeholder='Option 1&#10;Option 2&#10;Option 3' required></textarea></div>"
+                f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='create_poll' class='btn btn-orange'>Send Poll</button></div></form></div>"
             )
 
             automod_pane = (
@@ -1181,10 +1321,10 @@ class handler(BaseHTTPRequestHandler):
                 f"<div class='field'><label>Commands &amp; Tools</label><small>Mod-only commands are restricted to staff/admins in <b>{esc(srv_name)}</b>; member commands are open to everyone.</small>{cmd_items}</div>"
                 f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='save' class='btn btn-orange'>Save Command Settings &amp; Design</button></div></form>"
                 f"<form method='POST' action='/save' class='field' style='margin-top:12px;border-top:1px solid #1c202b'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='commands'>"
-                f"<label>Run Any Bot Command From Web</label><small>Examples: /roll: 999; /announce: Title | Body; /warn: @user or user_id | Reason (3 warnings = 2h mute).</small>"
+                f"<label>Run Any Bot Command From Web</label><small>/roll: 1 100 or 999 | /poll: Question | Opt1 | Opt2 | /announce: Title | Body | /warn: @user | Reason | /role: @user | RoleName</small>"
                 f"<div class='row2'><div><label>Command</label><select name='run_cmd_name'>{run_cmd_opts}</select></div>"
                 f"<div><label>Target Channel</label><select name='run_cmd_channel'>{run_ch_opts}</select></div></div>"
-                f"<div style='margin-top:10px'><label>Arguments / Ticket Reason</label><input type='text' name='run_cmd_args' placeholder='Optional args or reason...'></div>"
+                f"<div style='margin-top:10px'><label>Arguments / Min-Max / Poll Options / Reason</label><input type='text' name='run_cmd_args' placeholder='e.g. 1 100 or Question | Yes | No...'></div>"
                 f"<div style='margin-top:12px'><button type='submit' name='act' value='run_cmd' class='btn btn-orange'>Run Command</button></div></form></div>"
             )
 
@@ -1192,6 +1332,7 @@ class handler(BaseHTTPRequestHandler):
                 ("tickets", "Tickets & Roles"),
                 ("welcome", "Welcome & Goodbye"),
                 ("announce", "Announcements"),
+                ("polls", "Polls"),
                 ("automod", "Auto-Mod & Limits"),
                 ("verification", "Verification"),
                 ("commands", "Commands & Tools"),
@@ -1212,18 +1353,18 @@ class handler(BaseHTTPRequestHandler):
             html_out = (
                 f"<div class='wrap'><a href='/dashboard' style='color:#9ca3af;font-size:12px'>&larr; Back to Servers</a>"
                 f"<h1 style='margin:6px 0 18px;font-size:26px'>{esc(srv_name)}</h1><div class='layout'><div class='side'>{side_links}</div>"
-                f"<div class='panel'>{notice}{tickets_pane}{welcome_pane}{announce_pane}{automod_pane}{verification_pane}{commands_pane}{presets_pane}</div></div></div>"
+                f"<div class='panel'>{notice}{tickets_pane}{welcome_pane}{announce_pane}{polls_pane}{automod_pane}{verification_pane}{commands_pane}{presets_pane}</div></div></div>"
             )
             return self.send_html(page(f"{srv_name} - TicketMint", html_out, sess))
 
         cta = "Go to Dashboard" if sess else "Authorize & Open Dashboard"
         home = (
             f"<div class='hero'><h1>Yapin's fastest <span>ticket, mod &amp; community</span> bot.</h1>"
-            f"<p>Private support tickets with transcripts, smart anti-bypass auto-mod, role ping rules, welcome cards, and an instant zero-wait dashboard.</p>"
+            f"<p>Private support tickets with transcripts, smart anti-bypass auto-mod, role ping rules, welcome cards, polls, and an instant zero-wait dashboard.</p>"
             f"<div class='hero-btns'><a href='/dashboard' class='btn btn-orange'>{cta}</a><a href='{INVITE_URL}' class='btn btn-dark'>+ Invite Bot to Server</a></div></div>"
             f"<div class='grid'><div class='card'><h3 style='color:#ff7a00;margin-bottom:6px;font-size:16px'>Tickets &amp; Transcripts</h3><p style='color:#9ca3af;font-size:13px'>Auto-locked private rooms with claim/close buttons and automatic transcript logs.</p></div>"
             f"<div class='card'><h3 style='color:#ff7a00;margin-bottom:6px;font-size:16px'>Anti-Bypass Auto-Mod</h3><p style='color:#9ca3af;font-size:13px'>Blocks stretched words, leetspeak, protected role pings, links, caps, and spam.</p></div>"
-            f"<div class='card'><h3 style='color:#ff7a00;margin-bottom:6px;font-size:16px'>Instant Web Control</h3><p style='color:#9ca3af;font-size:13px'>Instant tab switching, welcome cards, verification, announcements, and 1-click presets.</p></div></div>"
+            f"<div class='card'><h3 style='color:#ff7a00;margin-bottom:6px;font-size:16px'>Instant Web Control</h3><p style='color:#9ca3af;font-size:13px'>Instant tab switching, welcome cards, verification, announcements, polls, and 1-click presets.</p></div></div>"
         )
         return self.send_html(page("TicketMint - Yapin' Bot", home, sess))
 
@@ -1246,7 +1387,7 @@ class handler(BaseHTTPRequestHandler):
         path = u.path
         sid = data.get("server", [""])[0].strip()
         tab = data.get("tab", ["tickets"])[0].strip().lower()
-        if tab not in ("tickets", "welcome", "announce", "automod", "verification", "commands", "presets"):
+        if tab not in VALID_TABS:
             tab = "tickets"
         act = data.get("act", ["save"])[0].strip().lower()
 
@@ -1390,6 +1531,26 @@ class handler(BaseHTTPRequestHandler):
                 if not ok:
                     return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=announce&err={urllib.parse.quote(err)}")
                 return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=announce&sent=1")
+            if tab == "polls":
+                poll_cid = data.get("poll_channel", [""])[0].strip()
+                poll_q = data.get("poll_question", [""])[0].strip()
+                poll_opts_raw = data.get("poll_options", [""])[0].strip()
+                poll_ping = data.get("poll_ping", [""])[0].strip()
+                if not poll_cid or not poll_q:
+                    return self.redir(
+                        f"/dashboard?server={urllib.parse.quote(sid)}&tab=polls&err={urllib.parse.quote('Choose a channel and enter a poll question.')}"
+                    )
+                ok, err = send_poll_smart(
+                    poll_cid,
+                    question=poll_q,
+                    options=poll_opts_raw,
+                    ping=poll_ping,
+                    author_name=sess["username"],
+                    sid=sid,
+                )
+                if not ok:
+                    return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=polls&err={urllib.parse.quote(err)}")
+                return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=polls&sent=1")
             if tab == "automod":
                 cur["anti_link"] = bool(data.get("anti_link"))
                 cur["anti_caps"] = bool(data.get("anti_caps"))
@@ -1474,12 +1635,31 @@ class handler(BaseHTTPRequestHandler):
                         if not ok:
                             return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
                         return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+                    if rc_name == "poll":
+                        parts = [p.strip() for p in re.split(r"\s*\|\s*|\s*\n\s*", rc_args) if p.strip()]
+                        q_str = parts[0] if parts else "Quick Poll"
+                        opts_list = parts[1:] if len(parts) > 1 else ["Yes", "No"]
+                        ok, err = send_poll_smart(
+                            rc_ch,
+                            question=q_str,
+                            options=opts_list,
+                            ping=cur["announce_ping"],
+                            author_name=sess["username"],
+                            sid=sid,
+                        )
+                        if not ok:
+                            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
                     if rc_name == "warn":
-                        t_part, _, r_part = rc_args.partition("|")
+                        if "|" in rc_args:
+                            t_part, _, r_part = rc_args.partition("|")
+                            raw_t, raw_r = t_part.strip() or "member", r_part.strip() or "Warned via dashboard"
+                        else:
+                            raw_t, raw_r = rc_args.strip() or "member", "Warned via dashboard"
                         w_count, muted, _, clean_t, clean_r = apply_user_warning(
                             sid,
-                            t_part.strip() or "member",
-                            reason=r_part.strip() or "Warned via dashboard",
+                            raw_t,
+                            reason=raw_r,
                             mod_user=f"@{sess['username']}",
                         )
                         if muted:
@@ -1499,15 +1679,13 @@ class handler(BaseHTTPRequestHandler):
                             )
                         return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
                     if rc_name == "roll":
-                        upper = 999
-                        if rc_args.isdigit():
-                            upper = max(2, min(999, int(rc_args)))
-                        rolled = random.randint(1, upper)
+                        lo, hi = parse_roll_bounds(rc_args)
+                        rolled = random.randint(lo, hi)
                         ok, err = send_msg_smart(
                             rc_ch,
-                            content=f"🎲 <@{sess['id']}> rolled **{rolled}** (1–{upper})!",
+                            content=f"🎲 <@{sess['id']}> rolled **{rolled}** (range: **{lo}** to **{hi}**).",
                             kind="send_message",
-                            extra={"server_id": sid},
+                            extra={"server_id": sid, "min": lo, "max": hi, "rolled": rolled},
                         )
                         if not ok:
                             return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
