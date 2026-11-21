@@ -29,7 +29,7 @@ ALL_COMMANDS = [
     ("setwelcomechannel", "/setwelcomechannel", "Set the automatic welcome channel", True),
     ("verifypanel", "/verifypanel", "Post a 1-click member verification panel", True),
     ("announce", "/announce", "Post styled announcements in chat", True),
-    ("poll", "/poll", "Create a poll with choices in a channel", False),
+    ("poll", "/poll", "Create a poll with choices and optional duration in a channel", False),
     ("warn", "/warn", "Warn a member (3 warnings = 2-hour mute)", True),
     ("clear", "/clear", "Bulk delete recent messages in a channel", True),
     ("slowmode", "/slowmode", "Set channel slowmode timer", True),
@@ -38,7 +38,8 @@ ALL_COMMANDS = [
     ("pfp", "/pfp", "View any member's full-size profile picture", False),
     ("makeitquote", "/makeitquote", "Generate a quote card PNG from text", False),
     ("replyquote", "@TicketMint Reply Quote", "Reply to a message and ping @TicketMint to quote it", False),
-    ("afk", "/afk", "Set an AFK status with an optional reason", False),
+    ("afk", "/afk", "Set an AFK status with an optional reason or timer", False),
+    ("unafk", "/unafk", "Clear an active AFK status", False),
     ("serverinfo", "/serverinfo", "View server details and protection stats", False),
     ("userinfo", "/userinfo", "View a member's ID, roles, and staff status", False),
 ]
@@ -66,6 +67,23 @@ def clean_err(raw_text):
     txt = re.sub(r"<[^>]+>", " ", str(raw_text or ""))
     txt = re.sub(r"\s+", " ", txt).strip()
     return txt[:140] if txt else "Request failed"
+
+
+def parse_duration_seconds(dur_str):
+    clean = str(dur_str or "").strip().strip("[]").lower()
+    m = re.fullmatch(r"(\d+)\s*([smhd])", clean)
+    if not m:
+        return 0
+    amt = int(m.group(1))
+    mult = {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+    return max(10, amt * mult)
+
+
+def format_duration_tag(dur_str):
+    clean = str(dur_str or "").strip().strip("[]").lower()
+    if not clean:
+        return ""
+    return f"[{clean}]" if parse_duration_seconds(clean) > 0 else ""
 
 
 def r_cmd(*args):
@@ -519,28 +537,36 @@ def parse_poll_options(raw_opts):
     return items[:10]
 
 
-def send_poll_smart(cid, question, options, ping="", author_name="Admin", sid=""):
+def send_poll_smart(cid, question, options, ping="", author_name="Admin", sid="", duration=""):
     if not cid:
         return False, "No channel selected."
     q_text = str(question or "").strip() or "Community Poll"
+    dur_tag = format_duration_tag(duration)
+    dur_secs = parse_duration_seconds(duration)
+    exp_at = (int(time.time()) + dur_secs) if dur_secs > 0 else 0
+    display_q = f"{dur_tag} {q_text}".strip() if dur_tag else q_text
     opts = parse_poll_options(options)
     badges = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
     lines = [f"{badges[i]} **{opt}**" for i, opt in enumerate(opts)]
-    desc = "\n".join(lines) + f"\n\n-# Poll by @{author_name} • TicketMint"
+    meta_suffix = f" • Duration: {dur_tag}" if dur_tag else ""
+    desc = "\n".join(lines) + f"\n\n-# Poll by @{author_name}{meta_suffix} • TicketMint"
     ok, err = send_msg_smart(
         cid,
         content=desc,
         ping=ping,
-        title=f"📊 {q_text}",
+        title=f"📊 {display_q}",
         description=desc,
         color_hex="#ff7a00",
-        footer=f"Poll by @{author_name} • TicketMint",
+        footer=f"Poll by @{author_name}{meta_suffix} • TicketMint",
         kind="poll",
         extra={
             "server_id": str(sid),
             "question": q_text,
             "options": opts,
             "choices": opts,
+            "duration": dur_tag,
+            "duration_seconds": dur_secs,
+            "expires_at": exp_at,
             "author": author_name,
         },
     )
@@ -1236,7 +1262,9 @@ class handler(BaseHTTPRequestHandler):
                 f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='polls'>"
                 f"<div class='field row2'><div><label>Poll Channel</label><small>Channel where the poll will be posted.</small><select name='poll_channel' required>{poll_cho}</select></div>"
                 f"<div><label>Custom Ping Target (Optional)</label><small>E.g. @everyone, @member, or leave blank.</small><input type='text' name='poll_ping' value='{esc(sc['announce_ping'])}' placeholder='@member'></div></div>"
-                f"<div class='field'><label>Poll Question</label><small>What are members voting on?</small><input type='text' name='poll_question' placeholder='Which update should we drop next?' required></div>"
+                f"<div class='field row2'><div><label>Poll Duration (Optional)</label><small>Sets a timer like [15m], [1h], or [1d].</small>"
+                f"<select name='poll_duration'><option value=''>No duration</option><option value='15m'>15m (15 minutes)</option><option value='30m'>30m (30 minutes)</option><option value='1h' selected>1h (1 hour)</option><option value='6h'>6h (6 hours)</option><option value='1d'>1d (1 day)</option></select></div>"
+                f"<div><label>Poll Question</label><small>What are members voting on?</small><input type='text' name='poll_question' placeholder='Which update should we drop next?' required></div></div>"
                 f"<div class='field'><label>Poll Options (One Per Line or Separated by | or ,)</label><small>Add up to 10 choices. Example: Option 1 | Option 2 | Option 3</small>"
                 f"<textarea name='poll_options' placeholder='Option 1&#10;Option 2&#10;Option 3' required></textarea></div>"
                 f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='create_poll' class='btn btn-orange'>Send Poll</button></div></form></div>"
@@ -1321,10 +1349,12 @@ class handler(BaseHTTPRequestHandler):
                 f"<div class='field'><label>Commands &amp; Tools</label><small>Mod-only commands are restricted to staff/admins in <b>{esc(srv_name)}</b>; member commands are open to everyone.</small>{cmd_items}</div>"
                 f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='save' class='btn btn-orange'>Save Command Settings &amp; Design</button></div></form>"
                 f"<form method='POST' action='/save' class='field' style='margin-top:12px;border-top:1px solid #1c202b'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='commands'>"
-                f"<label>Run Any Bot Command From Web</label><small>/roll: 1 100 or 999 | /poll: Question | Opt1 | Opt2 | /announce: Title | Body | /warn: @user | Reason | /role: @user | RoleName</small>"
+                f"<label>Run Any Bot Command From Web</label><small>/roll: 1 100 or 999 | /poll: [1h] Question | Opt1 | Opt2 | /afk: [1h] Reason | /warn: @user | Reason | /role: @user | RoleName</small>"
                 f"<div class='row2'><div><label>Command</label><select name='run_cmd_name'>{run_cmd_opts}</select></div>"
                 f"<div><label>Target Channel</label><select name='run_cmd_channel'>{run_ch_opts}</select></div></div>"
-                f"<div style='margin-top:10px'><label>Arguments / Min-Max / Poll Options / Reason</label><input type='text' name='run_cmd_args' placeholder='e.g. 1 100 or Question | Yes | No...'></div>"
+                f"<div class='row2' style='margin-top:10px'><div><label>Duration / Timer (For /poll or /afk)</label>"
+                f"<select name='run_cmd_duration'><option value=''>None</option><option value='15m'>15m</option><option value='1h'>1h</option><option value='6h'>6h</option><option value='1d'>1d</option></select></div>"
+                f"<div><label>Arguments / Min-Max / Poll Options / Reason</label><input type='text' name='run_cmd_args' placeholder='e.g. 1 100 or Question | Yes | No...'></div></div>"
                 f"<div style='margin-top:12px'><button type='submit' name='act' value='run_cmd' class='btn btn-orange'>Run Command</button></div></form></div>"
             )
 
@@ -1536,6 +1566,7 @@ class handler(BaseHTTPRequestHandler):
                 poll_q = data.get("poll_question", [""])[0].strip()
                 poll_opts_raw = data.get("poll_options", [""])[0].strip()
                 poll_ping = data.get("poll_ping", [""])[0].strip()
+                poll_dur = data.get("poll_duration", [""])[0].strip()
                 if not poll_cid or not poll_q:
                     return self.redir(
                         f"/dashboard?server={urllib.parse.quote(sid)}&tab=polls&err={urllib.parse.quote('Choose a channel and enter a poll question.')}"
@@ -1547,6 +1578,7 @@ class handler(BaseHTTPRequestHandler):
                     ping=poll_ping,
                     author_name=sess["username"],
                     sid=sid,
+                    duration=poll_dur,
                 )
                 if not ok:
                     return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=polls&err={urllib.parse.quote(err)}")
@@ -1600,6 +1632,7 @@ class handler(BaseHTTPRequestHandler):
                     rc_name = data.get("run_cmd_name", [""])[0].strip().lower()
                     rc_ch = data.get("run_cmd_channel", [""])[0].strip() or cur["dash"]
                     rc_args = data.get("run_cmd_args", [""])[0].strip()
+                    rc_dur = data.get("run_cmd_duration", [""])[0].strip()
                     if not rc_name:
                         return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote('Pick a command to run.')}")
                     if rc_name == "ticketpanel":
@@ -1646,6 +1679,7 @@ class handler(BaseHTTPRequestHandler):
                             ping=cur["announce_ping"],
                             author_name=sess["username"],
                             sid=sid,
+                            duration=rc_dur,
                         )
                         if not ok:
                             return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
@@ -1690,12 +1724,20 @@ class handler(BaseHTTPRequestHandler):
                         if not ok:
                             return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
                         return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+
+                    dur_secs = parse_duration_seconds(rc_dur)
+                    exp_at = (int(time.time()) + dur_secs) if dur_secs > 0 else 0
+                    dur_tag = format_duration_tag(rc_dur)
+                    final_args = f"{dur_tag} {rc_args}".strip() if (dur_tag and rc_name == "afk" and dur_tag not in rc_args) else rc_args
                     ok = queue_outbox({
                         "type": "run_command",
                         "command": rc_name,
                         "server_id": sid,
                         "channel_id": rc_ch,
-                        "args": rc_args,
+                        "args": final_args,
+                        "duration": dur_tag,
+                        "duration_seconds": dur_secs,
+                        "expires_at": exp_at,
                         "user_id": sess["id"],
                         "username": sess["username"],
                     })
