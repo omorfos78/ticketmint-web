@@ -1,46 +1,28 @@
-import base64, json, os, re, secrets, urllib.error, urllib.parse, urllib.request
-from http.server import BaseHTTPRequestHandler
+import datetime, io, json, os, re, struct, tempfile, threading, time, urllib.request, zlib
+from yapper import Bot, row, btn
 
-BOT_TOKEN = os.getenv("YAPPER_BOT_TOKEN", "yb_23404489.PlvFt0GgzYy6Z-SGp8ZHfSvOh0io7LhVL7KggSTY")
-CLIENT_ID = "c6cfe2fd-8a73-47c3-98dd-03d2da87b2d0"
-CLIENT_SECRET = "ycs_1CvP3dQdoKpC-UXSfHQz2vdNW21PSfKXWycQdd_x3FI"
-REDIS_URL = os.getenv("UPSTASH_REDIS_REST_URL", "").rstrip("/")
-REDIS_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN", "")
-Y_HOST = "www." + "yapin.gg"
-API_BASE = f"https://{Y_HOST}/api/bot"
-OAUTH_AUTH = f"https://{Y_HOST}/oauth/authorize"
-OAUTH_TOKEN = f"https://{Y_HOST}/api/oauth/token"
-SITE_HOST = "ticketmint-web." + "vercel.app"
-REDIR_URI = f"https://{SITE_HOST}/callback"
-INVITE_URL = "https://" + "yapin.gg/bot/23404489-32ad-42d7-ac93-c1ba71cb2574"
+BOT_TOKEN = "yb_23404489.PlvFt0GgzYy6Z-SGp8ZHfSvOh0io7LhVL7KggSTY"
+REDIS_URL = "https://" + "profound-seasnail-108379.upstash.io"
+REDIS_TOKEN = "gQAAAAAAAadbAAIgcDI4MTE2MjY4ODFkZGM0ZmQ1Yjg0NGE5MmU5YTAwYTI3Nw"
+SITE_URL = "https://" + "ticketmint-web.vercel.app"
+AV_CDN = "https://" + "files.yapper.website/avatars/"
+
+bot = Bot(token=BOT_TOKEN)
+OPEN_COOLDOWN = {}
+BOT_SELF_ID = ""
+USER_AV_CACHE = {}
 
 def r_cmd(*args):
-    if not REDIS_URL or not REDIS_TOKEN:
+    if not REDIS_TOKEN:
         return None
-    req = urllib.request.Request(REDIS_URL, data=json.dumps(list(args)).encode(), headers={"Authorization": f"Bearer {REDIS_TOKEN}", "Content-Type": "application/json"}, method="POST")
+    req = urllib.request.Request(
+        REDIS_URL,
+        data=json.dumps(list(args)).encode("utf-8"),
+        headers={"Authorization": f"Bearer {REDIS_TOKEN}", "Content-Type": "application/json"},
+        method="POST",
+    )
     with urllib.request.urlopen(req, timeout=8) as resp:
-        return json.loads(resp.read().decode()).get("result")
-
-def load_all_cfg():
-    raw = r_cmd("GET", "ticketmint:cfg")
-    return json.loads(raw) if raw else {}
-
-def save_all_cfg(d):
-    r_cmd("SET", "ticketmint:cfg", json.dumps(d))
-
-def y_api(method, path, body=None, bearer=None):
-    hdrs = {"Authorization": f"Bearer {bearer or BOT_TOKEN}", "Content-Type": "application/json", "User-Agent": "TicketMintWeb/1.0"}
-    data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(f"{API_BASE}{path}", data=data, headers=hdrs, method=method)
-    with urllib.request.urlopen(req, timeout=8) as resp:
-        txt = resp.read().decode()
-        return json.loads(txt) if txt else {}
-
-def safe_y(method, path, body=None):
-    try:
-        return y_api(method, path, body)
-    except Exception:
-        return {}
+        return json.loads(resp.read().decode("utf-8")).get("result")
 
 def u_list(d, k):
     return d if isinstance(d, list) else (d.get(k, []) if isinstance(d, dict) else [])
@@ -48,30 +30,375 @@ def u_list(d, k):
 def u_dict(d, k):
     return d.get(k, d) if isinstance(d, dict) else {}
 
-def get_scfg(sid):
+def load_all_cfg():
+    try:
+        raw = r_cmd("GET", "ticketmint:cfg")
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+def save_all_cfg(d):
+    try:
+        r_cmd("SET", "ticketmint:cfg", json.dumps(d))
+    except Exception as e:
+        print("[Config Save Note]:", e)
+        def get_scfg(sid):
     raw = load_all_cfg().get(str(sid), {})
     if isinstance(raw, list):
-        return {"roles": raw, "dash": "", "cat": "", "logs": "", "welcome": ""}
-    return {"roles": raw.get("roles", []), "dash": raw.get("dash", ""), "cat": raw.get("cat", ""), "logs": raw.get("logs", ""), "welcome": raw.get("welcome", "")}
+        raw = {"roles": raw}
+    return {
+        "roles": raw.get("roles", []),
+        "dash": raw.get("dash", ""),
+        "cat": raw.get("cat", ""),
+        "logs": raw.get("logs", ""),
+        "welcome": raw.get("welcome", ""),
+        "w_title": raw.get("w_title", "Welcome!"),
+        "w_msg": raw.get("w_msg", "Welcome {user} to {server}!"),
+        "w_banner": raw.get("w_banner", ""),
+        "w_color": raw.get("w_color", "#ff7a00"),
+        "goodbye": raw.get("goodbye", ""),
+        "g_msg": raw.get("g_msg", "{user} just left {server}."),
+        "disabled_cmds": raw.get("disabled_cmds", []),
+    }
 
-def is_admin(sid, uid):
+def is_cmd_disabled(sid, cmd_key):
+    if not sid:
+        return False
+    return cmd_key in set(get_scfg(sid).get("disabled_cmds", []))
+
+def cmd_text(ctx):
+    a = str(getattr(ctx, "args", "") or "").strip()
+    if a:
+        return a
+    opts = getattr(ctx, "options", None)
+    if isinstance(opts, dict) and opts:
+        return " ".join(str(v) for v in opts.values() if v is not None).strip()
+    c = str(getattr(ctx, "content", "") or "").strip()
+    return c.partition(" ")[-1].strip() if " " in c else ""
+
+def format_msg_date(obj=None):
+    raw_ts = None
+    if isinstance(obj, dict):
+        raw_ts = obj.get("created_at") or obj.get("timestamp")
+    elif obj is not None:
+        raw_ts = getattr(obj, "created_at", None) or getattr(obj, "timestamp", None)
+    if raw_ts:
+        try:
+            s = str(raw_ts).replace("Z", "+00:00")
+            dt = datetime.datetime.fromisoformat(s)
+            return dt.strftime("%b %d, %Y")
+        except Exception:
+            pass
+    return datetime.datetime.now().strftime("%b %d, %Y")
+
+def extract_modal_pair(i, k1, k2):
+    sources = []
+    for attr in ("values", "fields", "inputs", "data", "_data", "raw"):
+        val = getattr(i, attr, None)
+        if val is not None:
+            sources.append(val)
     try:
-        srv = u_dict(safe_y("GET", f"/servers/{sid}"), "server")
+        sources.append(vars(i))
+    except Exception:
+        pass
+    v1, v2 = "", ""
+    def walk(obj):
+        nonlocal v1, v2
+        if isinstance(obj, dict):
+            if k1 in obj and obj[k1] and not v1:
+                v1 = str(obj[k1])
+            if k2 in obj and obj[k2] and not v2:
+                v2 = str(obj[k2])
+            cid = obj.get("custom_id") or obj.get("id") or obj.get("name")
+            val = obj.get("value") if obj.get("value") is not None else obj.get("text")
+            if cid == k1 and val and not v1:
+                v1 = str(val)
+            elif cid == k2 and val and not v2:
+                v2 = str(val)
+            for v in obj.values():
+                if isinstance(v, (dict, list, tuple)):
+                    walk(v)
+        elif isinstance(obj, (list, tuple)):
+            for item in obj:
+                walk(item)
+    for src in sources:
+        walk(src)
+    return v1.strip(), v2.strip()
+    def get_uname(obj, fallback="User"):
+    if obj is None:
+        return fallback
+    if isinstance(obj, dict):
+        for k in ("display_name", "username", "global_name", "name", "nick"):
+            if obj.get(k):
+                return str(obj[k])
+        if isinstance(obj.get("user"), dict):
+            return get_uname(obj["user"], fallback)
+        return fallback
+    for attr in ("display_name", "username", "global_name", "name", "nick"):
+        v = getattr(obj, attr, None)
+        if v:
+            return str(v)
+    return fallback
+
+def scan_url(obj, depth=0):
+    if obj is None or depth > 4:
+        return ""
+    if isinstance(obj, str):
+        return obj if obj.startswith("http") else ""
+    if isinstance(obj, dict):
+        av_url = obj.get("avatar_url")
+        if isinstance(av_url, str) and av_url.startswith("http"):
+            return av_url
+        av_path = obj.get("avatar_path")
+        if isinstance(av_path, str) and av_path:
+            return av_path if av_path.startswith("http") else f"{AV_CDN}{av_path.lstrip('/')}"
+        for k in ("avatar", "photo_url", "photo", "pfp", "image_url", "image"):
+            v = obj.get(k)
+            if isinstance(v, str) and v:
+                if v.startswith("http"):
+                    return v
+                if "/" in v:
+                    return f"{AV_CDN}{v.lstrip('/')}"
+        for k, v in obj.items():
+            if "banner" in str(k).lower():
+                continue
+            found = scan_url(v, depth + 1)
+            if found:
+                return found
+        return ""
+    if isinstance(obj, (list, tuple)):
+        for item in obj:
+            found = scan_url(item, depth + 1)
+            if found:
+                return found
+        return ""
+    for attr in ("avatar_url", "avatar_path", "avatar", "data", "_data", "raw", "user"):
+        try:
+            val = getattr(obj, attr, None)
+            if attr == "avatar_path" and isinstance(val, str) and val:
+                return val if val.startswith("http") else f"{AV_CDN}{val.lstrip('/')}"
+            found = scan_url(val, depth + 1)
+            if found:
+                return found
+        except Exception:
+            pass
+    try:
+        return scan_url(vars(obj), depth + 1)
+    except Exception:
+        return ""
+
+def cache_user_obj(u):
+    if u is None:
+        return
+    uid = u.get("id") if isinstance(u, dict) else getattr(u, "id", None)
+    av = scan_url(u)
+    if uid and av:
+        USER_AV_CACHE[str(uid)] = av
+        def clean_mentions(txt, sid):
+    if not txt or "<@" not in txt:
+        return txt
+    names = {}
+    if sid:
+        for m in u_list(bot.api("GET", f"/servers/{sid}/members"), "members"):
+            u = m.get("user") if isinstance(m.get("user"), dict) else m
+            if u.get("id"):
+                names[str(u["id"])] = get_uname(u, "User")
+    def repl(match):
+        mid = match.group(1)
+        return f"@{names.get(mid, 'User')}"
+    return re.sub(r"<@!?([a-zA-Z0-9-]+)>", repl, txt)
+
+def sync_web_meta():
+    global BOT_SELF_ID
+    try:
+        me_raw = bot.api("GET", "/me")
+        me_bot = u_dict(me_raw, "bot")
+        BOT_SELF_ID = str(me_bot.get("id") or me_raw.get("id") or BOT_SELF_ID)
+        srvs = u_list(me_raw, "servers") or u_list(bot.api("GET", "/servers"), "servers")
+        known_ids = {s.get("id") for s in srvs if s.get("id")}
+        for cfg_id in load_all_cfg().keys():
+            if cfg_id and cfg_id not in known_ids:
+                srvs.append({"id": cfg_id})
+        if srvs:
+            out = []
+            for s in srvs:
+                sid = s.get("id")
+                if not sid:
+                    continue
+                full = u_dict(bot.api("GET", f"/servers/{sid}"), "server")
+                if not full or not full.get("id"):
+                    full = s
+                m_cnt = full.get("member_count") or s.get("member_count") or len(u_list(bot.api("GET", f"/servers/{sid}/members"), "members"))
+                out.append({
+                    "id": sid,
+                    "name": full.get("name") or s.get("name") or f"Server ({sid})",
+                    "owner_id": full.get("owner_id") or s.get("owner_id") or "",
+                    "icon": full.get("icon_url") or full.get("icon") or s.get("icon") or "",
+                    "member_count": m_cnt,
+                })
+                roles = u_list(bot.api("GET", f"/servers/{sid}/roles"), "roles")
+                chs = u_list(bot.api("GET", f"/servers/{sid}/channels"), "channels")
+                r_cmd("SET", f"ticketmint:meta:{sid}", json.dumps({"roles": roles, "channels": chs}))
+            r_cmd("SET", "ticketmint:servers", json.dumps(out))
+            print(f"[WebSync] Synced {len(out)} server(s) to {SITE_URL}!")
+    except Exception as e:
+        print("[WebSync] Note:", e)
+
+def is_staff(sid, uid):
+    try:
+        sc = get_scfg(sid)
+        srv = u_dict(bot.api("GET", f"/servers/{sid}"), "server")
         if str(srv.get("owner_id", "")) == str(uid):
             return True
-        mem = u_dict(safe_y("GET", f"/servers/{sid}/members/{uid}"), "member")
-        mr = set(mem.get("roles", []))
-        for r in u_list(safe_y("GET", f"/servers/{sid}/roles"), "roles"):
-            if r.get("id") in mr:
+        mem = u_dict(bot.api("GET", f"/servers/{sid}/members/{uid}"), "member")
+        mroles = set(mem.get("roles", []))
+        if any(r in mroles for r in sc["roles"]):
+            return True
+        for r in u_list(bot.api("GET", f"/servers/{sid}/roles"), "roles"):
+            if r.get("id") in mroles:
                 p = r.get("permissions", {})
                 if isinstance(p, dict) and (p.get("administrator") or p.get("manage_server") or p.get("manage_channels")):
                     return True
     except Exception:
-        pass
+        return True
     return False
+    def resolve_user(sid, raw_target, fallback_id, fallback_name, ctx_obj=None):
+    cache_user_obj(ctx_obj)
+    if ctx_obj is not None:
+        cache_user_obj(getattr(ctx_obj, "author", None))
+    uid = re.sub(r"[<@!>]", "", str(raw_target or "")).strip()
+    target_id = uid or str(fallback_id)
+    found_name = str(fallback_name or "User")
+    found_av = USER_AV_CACHE.get(target_id, "") or (scan_url(ctx_obj) if not uid else "")
+    if sid:
+        members = u_list(bot.api("GET", f"/servers/{sid}/members"), "members")
+        for m in members:
+            cache_user_obj(m)
+            u = m.get("user") if isinstance(m.get("user"), dict) else m
+            uname = str(u.get("username") or "")
+            dname = get_uname(u, "")
+            mid = str(u.get("id") or m.get("user_id") or m.get("id") or "")
+            if (uid and (mid == uid or uname.lower() == uid.lower() or dname.lower() == uid.lower())) or (not uid and mid == str(fallback_id)):
+                target_id = mid or target_id
+                found_name = dname or uname or found_name
+                found_av = scan_url(m) or USER_AV_CACHE.get(target_id, "") or found_av
+                break
+        if not found_av and target_id:
+            mem = bot.api("GET", f"/servers/{sid}/members/{target_id}")
+            cache_user_obj(mem)
+            found_av = scan_url(mem) or USER_AV_CACHE.get(target_id, "")
+            found_name = get_uname(u_dict(mem, "member"), found_name)
+    if not found_av and target_id:
+        for ep in (f"/users/{target_id}", f"/user/{target_id}"):
+            u_res = bot.api("GET", ep)
+            cache_user_obj(u_res)
+            found_av = scan_url(u_res)
+            if found_av:
+                found_name = get_uname(u_dict(u_res, "user"), found_name)
+                break
+    return target_id, found_name, found_av
 
-def post_panel(cid):
-    bname = u_dict(safe_y("GET", "/me"), "bot").get("name", "TicketMint")
+def load_font(size, bold=True):
+    from PIL import ImageFont
+    win_fonts = ["segoeuib.ttf", "arialbd.ttf", "calibrib.ttf", "verdanab.ttf"] if bold else ["segoeui.ttf", "arial.ttf", "calibri.ttf"]
+    for fn in win_fonts:
+        p = os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts", fn)
+        if os.path.exists(p):
+            try:
+                return ImageFont.truetype(p, size)
+            except Exception:
+                pass
+    try:
+        return ImageFont.load_default(size=size)
+    except Exception:
+        return ImageFont.load_default()
+        def build_quote_png(quote_text, author_name, avatar_url="", date_str=""):
+    W, H = 1000, 440
+    date_label = date_str or datetime.datetime.now().strftime("%b %d, %Y")
+    try:
+        from PIL import Image, ImageDraw
+        card = Image.new("RGBA", (W, H), (11, 13, 18, 255))
+        draw = ImageDraw.Draw(card)
+        draw.rounded_rectangle((16, 16, W - 16, H - 16), radius=28, fill=(20, 24, 34, 255), outline=(255, 122, 0, 255), width=3)
+        draw.rounded_rectangle((36, 44, 46, H - 44), radius=5, fill=(255, 122, 0, 255))
+        av_size = 190
+        av_x, av_y = 78, (H - av_size) // 2
+        draw.ellipse((av_x - 6, av_y - 6, av_x + av_size + 6, av_y + av_size + 6), fill=(255, 122, 0, 255))
+        av_img = None
+        if avatar_url and str(avatar_url).startswith("http"):
+            try:
+                req = urllib.request.Request(avatar_url, headers={"User-Agent": "TicketMint/1.0"})
+                av_bytes = urllib.request.urlopen(req, timeout=6).read()
+                av_img = Image.open(io.BytesIO(av_bytes)).convert("RGBA").resize((av_size, av_size))
+            except Exception:
+                av_img = None
+        if av_img is None:
+            av_img = Image.new("RGBA", (av_size, av_size), (32, 38, 54, 255))
+            d_av = ImageDraw.Draw(av_img)
+            f_init = load_font(88, True)
+            d_av.text((62, 42), (author_name[:1] or "T").upper(), fill=(255, 122, 0, 255), font=f_init)
+        mask = Image.new("L", (av_size, av_size), 0)
+        ImageDraw.Draw(mask).ellipse((0, 0, av_size, av_size), fill=255)
+        card.paste(av_img, (av_x, av_y), mask)
+
+        txt = str(quote_text).strip()
+        f_size = 40 if len(txt) <= 55 else (32 if len(txt) <= 115 else 25)
+        max_chars = 26 if f_size == 40 else (33 if f_size == 32 else 42)
+        f_quote = load_font(f_size, True)
+        f_big_q = load_font(76, True)
+        f_author = load_font(25, True)
+        f_date = load_font(19, False)
+        f_tag = load_font(18, False)
+        words = txt.split()
+        lines, cur = [], ""
+        for w in words:
+            if len(cur) + len(w) + 1 <= max_chars:
+                cur = f"{cur} {w}".strip()
+            else:
+                lines.append(cur)
+                cur = w
+        if cur:
+            lines.append(cur)
+        lines = lines[:5]
+        tx = 315
+        draw.text((tx, 36), "“", fill=(255, 122, 0, 255), font=f_big_q)
+        line_h = f_size + 14
+        start_y = max(100, (H - len(lines) * line_h) // 2 - 22)
+        for idx, ln in enumerate(lines):
+            draw.text((tx + 8, start_y + idx * line_h), ln, fill=(248, 250, 252, 255), font=f_quote)
+        draw.line([(tx + 8, H - 102), (tx + 72, H - 102)], fill=(255, 122, 0, 255), width=4)
+        draw.text((tx + 8, H - 90), f"@{author_name}", fill=(255, 255, 255, 255), font=f_author)
+        draw.text((tx + 8, H - 56), date_label, fill=(148, 163, 184, 255), font=f_date)
+        draw.text((W - 140, H - 48), "TicketMint", fill=(148, 163, 184, 255), font=f_tag)
+        buf = io.BytesIO()
+        card.save(buf, format="PNG")
+        return buf.getvalue()
+    except Exception:
+        raw = bytearray()
+        for y in range(H):
+            row_b = bytearray(b"\x00")
+            for x in range(W):
+                row_b.extend(b"\xff\x7a\x00\xff" if x < 10 else b"\x0b\x0d\x12\xff")
+            raw.extend(row_b)
+        def mk_chunk(tag, d):
+            return struct.pack(">I", len(d)) + tag + d + struct.pack(">I", zlib.crc32(tag + d) & 0xFFFFFFFF)
+        return b"\x89PNG\r\n\x1a\n" + mk_chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 6, 0, 0, 0)) + mk_chunk(b"IDAT", zlib.compress(bytes(raw))) + mk_chunk(b"IEND", b"")
+
+def send_quote_with_cleanup(quote_text, author_name, avatar_url="", date_str="", channel_id=None, reply_to=None):
+    png = build_quote_png(quote_text, author_name, avatar_url, date_str)
+    fd, tmp_path = tempfile.mkstemp(suffix=".png", prefix="tm_quote_")
+    os.close(fd)
+    try:
+        with open(tmp_path, "wb") as f:
+            f.write(png)
+        bot.send(channel_id, content="", reply_to=reply_to, files=[tmp_path])
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+            def send_ticket_panel(cid):
+    bname = u_dict(bot.api("GET", "/me"), "bot").get("name", "TicketMint")
     payload = {
         "flags": 32768,
         "components": [{
@@ -87,230 +414,380 @@ def post_panel(cid):
             ],
         }],
     }
-    safe_y("POST", f"/channels/{cid}/messages", payload)
-CSS = """
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:#0b0d12;color:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;min-height:100vh;display:flex;flex-direction:column}
-a{text-decoration:none;color:inherit}
-.nav{display:flex;justify-content:space-between;align-items:center;padding:16px 24px;border-bottom:1px solid #1c202b;background:#0e1118;position:sticky;top:0;z-index:10}
-.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:20px;color:#fff}
-.badge{background:#ff7a00;color:#000;padding:4px 9px;border-radius:8px;font-weight:900;font-size:14px}
-.nav-links{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.btn{padding:10px 18px;border-radius:10px;font-weight:700;font-size:14px;cursor:pointer;border:none;display:inline-flex;align-items:center;gap:8px;transition:.15s}
-.btn-orange{background:#ff7a00;color:#000}
-.btn-orange:hover{background:#ff8f26}
-.btn-dark{background:#181c26;color:#fff;border:1px solid #282e3d}
-.btn-dark:hover{border-color:#ff7a00}
-.hero{max-width:860px;margin:64px auto;padding:0 20px;text-align:center}
-.hero h1{font-size:clamp(32px,6vw,54px);line-height:1.1;margin-bottom:16px;font-weight:900}
-.hero h1 span{color:#ff7a00}
-.hero p{color:#9ca3af;font-size:17px;max-width:580px;margin:0 auto 28px;line-height:1.5}
-.hero-btns{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;max-width:960px;margin:40px auto;padding:0 20px}
-.card{background:#12151e;border:1px solid #1f2432;border-radius:14px;padding:22px;transition:.15s}
-.card:hover{border-color:#ff7a00}
-.srv-row{display:flex;align-items:center;justify-content:space-between;background:#12151e;border:1px solid #1f2432;border-radius:14px;padding:18px 22px;margin-bottom:12px;transition:.15s}
-.srv-row:hover{border-color:#ff7a00;background:#161a26}
-.srv-left{display:flex;align-items:center;gap:16px}
-.srv-ico{width:46px;height:46px;border-radius:12px;background:#1b2030;border:1px solid #2a3147;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:18px;color:#fff;overflow:hidden;flex-shrink:0}
-.srv-ico img{width:100%;height:100%;object-fit:cover}
-.wrap{max-width:980px;width:100%;margin:32px auto;padding:0 18px;flex:1}
-.layout{display:grid;grid-template-columns:220px 1fr;gap:22px}
-@media(max-width:760px){.layout{grid-template-columns:1fr}.nav{padding:12px 16px}}
-.side{background:#12151e;border:1px solid #1f2432;border-radius:14px;padding:12px;height:fit-content}
-.side a{display:block;padding:11px 14px;border-radius:9px;color:#9ca3af;font-weight:600;margin-bottom:4px}
-.side a.act{background:#ff7a0022;color:#ff7a00;border-left:3px solid #ff7a00}
-.panel{background:#12151e;border:1px solid #1f2432;border-radius:14px;padding:24px}
-.field{padding:18px 0;border-bottom:1px solid #1c202b}
-.field:last-child{border-bottom:none}
-.field label{display:block;font-weight:700;margin-bottom:4px}
-.field small{display:block;color:#9ca3af;margin-bottom:10px}
-select,input[type=text]{width:100%;padding:11px 12px;border-radius:9px;background:#0b0d12;color:#fff;border:1px solid #2a3040;font-size:14px}
-.pills{display:flex;flex-wrap:wrap;gap:8px}
-.pill input{display:none}
-.pill span{display:inline-block;padding:7px 13px;border-radius:999px;background:#0b0d12;border:1px solid #2a3040;font-size:13px;font-weight:600;cursor:pointer;color:#cbd5e1}
-.pill input:checked+span{background:#ff7a00;color:#000;border-color:#ff7a00}
-"""
+    bot.api("POST", f"/channels/{cid}/messages", payload)
 
-def page(title, body, user=None):
-    inv = f"<a href='{INVITE_URL}' class='btn btn-dark'>+ Invite Bot</a>"
-    right = f"{inv} <a href='/dashboard' class='btn btn-dark'>@{user['username']}</a> <a href='/logout' class='btn btn-dark'>Logout</a>" if user else f"{inv} <a href='/login' class='btn btn-orange'>Authorize with Yapin'</a>"
-    return f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{title}</title><style>{CSS}</style></head><body><div class='nav'><a href='/' class='brand'><span class='badge'>TM</span> TicketMint</a><div class='nav-links'>{right}</div></div>{body}</body></html>"
-def decode_jwt(tok):
+def close_ticket_now(sid, cid, uid, reason="No reason provided"):
+    sc = get_scfg(sid)
+    if sc["logs"]:
+        try:
+            bot.api("POST", f"/channels/{sc['logs']}/messages", {"embeds": [{"title": "Ticket Closed", "description": f"Channel <#{cid}> closed by <@{uid}>.\n**Reason:** {reason}", "color": 0xFF7A00}]})
+        except Exception:
+            pass
+    time.sleep(3)
+    bot.api("DELETE", f"/channels/{cid}")
+
+def bg_sync_loop():
+    while True:
+        time.sleep(30)
+        sync_web_meta()
+
+@bot.on("ready")
+def on_ready(data):
+    print("TicketMint is online!")
+    sync_web_meta()
+    threading.Thread(target=bg_sync_loop, daemon=True).start()
+
+@bot.on("server_create")
+def on_server_join(data):
+    sync_web_meta()
+
+@bot.command(name="help", description="View all TicketMint commands and dashboard link")
+def help_cmd(ctx):
+    em = {
+        "title": "TicketMint — Command Guide",
+        "description": (
+            "**Ticket System**\n"
+            "• `/ticketpanel` — Post the orange Open a Ticket panel\n"
+            "• `/modroles` — Add, remove, or view staff roles\n"
+            "• `/claimticket` — Claim the current open ticket\n"
+            "• `/ticketclose` — Close and log the current ticket\n\n"
+            "**Server & Fun Tools**\n"
+            "• `/announce Title | Message` — Post a styled announcement (add `| everyone` to ping)\n"
+            "• `/pfp [@user]` — View any member's full-size profile picture\n"
+            "• `/makeitquote` — Turn text (or a reply + `@TicketMint` ping) into a dated quote card\n"
+            "• `/setwelcomechannel` — Set the Welcome channel\n"
+            "• `/dashboard` — Open the 24/7 web dashboard\n\n"
+            f"**Web Dashboard:** {SITE_URL}/dashboard"
+        ),
+        "color": 0xFF7A00,
+    }
+    ctx.reply(embeds=[em])
+
+@bot.command(name="dashboard", description="Get the link to configure TicketMint on the web")
+def dash_cmd(ctx):
+    sync_web_meta()
+    ctx.reply(f"Configure **TicketMint** anytime at: {SITE_URL}/dashboard")
+    @bot.command(name="announce", description="Post a styled announcement: /announce Title | Message (add | everyone to ping)")
+def announce_cmd(ctx):
+    sid = getattr(ctx, "server_id", "")
+    if is_cmd_disabled(sid, "announce"):
+        return ctx.ephemeral("`/announce` is disabled on the web dashboard for this server.")
+    uid = getattr(ctx, "user_id", "") or getattr(ctx, "author_id", "")
+    if not is_staff(sid, uid):
+        return ctx.ephemeral("Only staff members can send announcements.")
+    raw = cmd_text(ctx)
+    if not raw:
+        return ctx.ephemeral("Type `/announce Title | Your message` (example: `/announce HEYYYY GUYS | IM THE BEST GUYS`)")
+    if "|" in raw:
+        left, _, right = raw.partition("|")
+        title = left.strip() or "Announcement"
+        body = right.strip()
+        ping_txt = ""
+        if body.lower().endswith("| everyone"):
+            body = body[:-10].strip()
+            ping_txt = "@everyone"
+        elif body.lower().endswith("|everyone"):
+            body = body[:-9].strip()
+            ping_txt = "@everyone"
+    else:
+        title = "Announcement"
+        body = raw.strip()
+        ping_txt = ""
+    if not body:
+        return ctx.ephemeral("Please add your message after `|`, e.g. `/announce HEYYYY GUYS | IM THE BEST GUYS`")
+    _, staff_name, _ = resolve_user(sid, uid, uid, get_uname(getattr(ctx, "author", None), "Staff"), ctx)
+    bot.api("POST", f"/channels/{ctx.channel_id}/messages", {
+        "content": ping_txt,
+        "embeds": [{
+            "description": f"## {title}\n\n{body}",
+            "color": 0xFF7A00,
+            "footer": {"text": f"Announced by @{staff_name} • TicketMint"},
+        }],
+    })
+    ctx.ephemeral("Announcement posted!")
+
+@bot.command(name="pfp", description="Show the profile picture of a user", options=[
+    {"name": "user", "description": "Member to view (leave empty for yourself)", "type": "string", "required": False},
+])
+def pfp_cmd(ctx):
+    sid = getattr(ctx, "server_id", "")
+    if is_cmd_disabled(sid, "pfp"):
+        return ctx.ephemeral("`/pfp` is disabled on the web dashboard for this server.")
+    uid0 = getattr(ctx, "user_id", "") or getattr(ctx, "author_id", "")
+    opts = getattr(ctx, "options", None) or {}
+    target = str(opts.get("user") or "").strip() if isinstance(opts, dict) and opts.get("user") else cmd_text(ctx)
+    author_name = get_uname(getattr(ctx, "author", None), "User")
+    uid, uname, av = resolve_user(sid, target, uid0, author_name, ctx)
+    if not av:
+        return ctx.reply(f"**{uname}** does not have a custom profile picture set.")
+    em = {"title": f"{uname}'s Profile Picture", "image": {"url": av}, "color": 0xFF7A00}
+    ctx.reply(embeds=[em])
+
+@bot.command(name="makeitquote", description="Create a quote card image from text", options=[
+    {"name": "text", "description": "The quote text to put on the card", "type": "string", "required": True},
+])
+def makeitquote_cmd(ctx):
+    sid = getattr(ctx, "server_id", "")
+    if is_cmd_disabled(sid, "makeitquote"):
+        return ctx.ephemeral("`/makeitquote` is disabled on the web dashboard for this server.")
+    uid0 = getattr(ctx, "user_id", "") or getattr(ctx, "author_id", "")
+    opts = getattr(ctx, "options", None) or {}
+    raw_q = str(opts.get("text") or "").strip() if isinstance(opts, dict) and opts.get("text") else cmd_text(ctx)
+    q = clean_mentions(raw_q, sid)
+    if not q:
+        return ctx.ephemeral("Please enter text to quote!")
+    author_name = get_uname(getattr(ctx, "author", None), "User")
+    uid, uname, av = resolve_user(sid, "", uid0, author_name, ctx)
+    ctx.ephemeral("Creating your quote card...")
+    send_quote_with_cleanup(q[:220], uname, av, format_msg_date(ctx), channel_id=ctx.channel_id)
+    @bot.on("message")
+def on_message_quote(msg):
     try:
-        parts = tok.split(".")
-        if len(parts) < 2:
-            return None
-        p = parts.pop(1)
-        p += "=" * (-len(p) % 4)
-        obj = json.loads(base64.urlsafe_b64decode(p.encode()).decode())
-        return obj if isinstance(obj, dict) and (obj.get("id") or obj.get("sub") or obj.get("user_id")) else None
-    except Exception:
-        return None
+        cache_user_obj(msg)
+        author = getattr(msg, "author", None)
+        cache_user_obj(author)
+        is_bot = author.get("bot", False) if isinstance(author, dict) else getattr(author, "bot", False)
+        if is_bot:
+            return
+        sid = str(getattr(msg, "server_id", "") or "")
+        if is_cmd_disabled(sid, "replyquote"):
+            return
+        content = str(getattr(msg, "content", "") or "")
+        if not ((BOT_SELF_ID and BOT_SELF_ID in content) or ("ticketmint" in content.lower())):
+            return
+        cid = str(getattr(msg, "channel_id", "") or "")
+        ref = getattr(msg, "referenced_message", None) or getattr(msg, "reply_to", None)
+        ref_id = getattr(msg, "reply_to_id", None) or getattr(msg, "referenced_message_id", None)
+        if isinstance(ref, str):
+            ref_id = ref
+            ref = None
+        if ref is None and ref_id and cid:
+            ref = u_dict(bot.api("GET", f"/channels/{cid}/messages/{ref_id}"), "message")
+        if not ref:
+            return
+        cache_user_obj(ref)
+        q_author = getattr(ref, "author", None) if not isinstance(ref, dict) else ref.get("author")
+        cache_user_obj(q_author)
+        q_uid = str((q_author.get("id") if isinstance(q_author, dict) else getattr(q_author, "id", "")) or "")
+        if not q_uid:
+            q_uid = str((ref.get("author_id") if isinstance(ref, dict) else getattr(ref, "author_id", "")) or "")
+        q_name = get_uname(q_author, "Member")
+        q_av = scan_url(q_author) or USER_AV_CACHE.get(q_uid, "")
+        if (not q_av or q_name == "Member") and q_uid:
+            _, q_name, q_av = resolve_user(sid, q_uid, q_uid, q_name, q_author)
+        raw_q = str(getattr(ref, "content", None) if not isinstance(ref, dict) else ref.get("content") or "").strip()
+        q_txt = clean_mentions(raw_q, sid)
+        if q_txt and cid:
+            send_quote_with_cleanup(q_txt[:220], q_name, q_av, format_msg_date(ref), channel_id=cid, reply_to=getattr(msg, "id", None))
+    except Exception as e:
+        print("[ReplyQuote Note]:", e)
 
-class handler(BaseHTTPRequestHandler):
-    def get_sess(self):
-        ck = self.headers.get("Cookie", "")
-        m = re.search(r"tm_sess=([a-zA-Z0-9_-]+)", ck)
-        if not m:
-            return None
-        raw = r_cmd("GET", f"tm:sess:{m.group(1)}")
-        return json.loads(raw) if raw else None
+def handle_welcome_event(data, is_join=True):
+    try:
+        if not isinstance(data, dict):
+            return
+        sid = data.get("server_id") or data.get("guild_id")
+        if not sid:
+            return
+        sc = get_scfg(sid)
+        user = data.get("user") or (data.get("member") or {}).get("user") or data
+        uid = user.get("id")
+        uname = user.get("username") or user.get("name") or "Member"
+        srv = u_dict(bot.api("GET", f"/servers/{sid}"), "server")
+        sname = srv.get("name") or "the server"
+        if is_join and sc["welcome"]:
+            txt = sc["w_msg"].replace("{user}", f"<@{uid}>" if uid else uname).replace("{server}", sname)
+            col = int(sc["w_color"].lstrip("#"), 16) if str(sc["w_color"]).startswith("#") else 0xFF7A00
+            em = {"title": sc["w_title"] or "Welcome!", "description": txt, "color": col}
+            if sc["w_banner"]:
+                em["image"] = {"url": sc["w_banner"]}
+            bot.api("POST", f"/channels/{sc['welcome']}/messages", {"embeds": [em]})
+        elif not is_join and sc["goodbye"]:
+            txt = sc["g_msg"].replace("{user}", f"**{uname}**").replace("{server}", sname)
+            bot.api("POST", f"/channels/{sc['goodbye']}/messages", {"embeds": [{"title": "Goodbye", "description": txt, "color": 0xFF7A00}]})
+    except Exception as e:
+        print("[Welcome Event Note]:", e)
 
-    def send_html(self, html, cookie=None):
-        data = html.encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(data)))
-        if cookie:
-            self.send_header("Set-Cookie", cookie)
-        self.end_headers()
-        self.wfile.write(data)
+for ev_j in ("member_join", "server_member_add", "guild_member_add"):
+    bot.on(ev_j)(lambda d: handle_welcome_event(d, True))
 
-    def redir(self, loc, cookie=None):
-        self.send_response(302)
-        self.send_header("Location", loc)
-        if cookie:
-            self.send_header("Set-Cookie", cookie)
-        self.end_headers()
+for ev_l in ("member_leave", "server_member_remove", "guild_member_remove"):
+    bot.on(ev_l)(lambda d: handle_welcome_event(d, False))
+    @bot.command(name="modroles", description="Add or remove a staff role for tickets (or leave empty to view)")
+def modroles_cmd(ctx):
+    if is_cmd_disabled(ctx.server_id, "modroles"):
+        return ctx.ephemeral("`/modroles` is disabled on the web dashboard for this server.")
+    if not is_staff(ctx.server_id, ctx.user_id):
+        return ctx.ephemeral("Only server admins can manage Mod roles.")
+    all_cfg = load_all_cfg()
+    sc = get_scfg(ctx.server_id)
+    rid = re.sub(r"[<@&>]", "", cmd_text(ctx)).strip()
+    if rid:
+        if rid in sc["roles"]:
+            sc["roles"].remove(rid)
+            msg = f"Removed <@&{rid}> from TicketMint Mod roles."
+        else:
+            sc["roles"].append(rid)
+            msg = f"Added <@&{rid}> to TicketMint Mod roles."
+        all_cfg[str(ctx.server_id)] = sc
+        save_all_cfg(all_cfg)
+        return ctx.reply(msg)
+    cur = ", ".join(f"<@&{r}>" for r in sc["roles"]) if sc["roles"] else "None set yet"
+    ctx.reply(f"**Current Mod Roles:** {cur}\nUse `/modroles @RoleName` or configure on {SITE_URL}/dashboard")
 
-    def do_GET(self):
-        u = urllib.parse.urlsplit(self.path)
-        path, qs = u.path, urllib.parse.parse_qs(u.query)
-        sess = self.get_sess()
+@bot.command(name="ticketpanel", description="Post the orange Open a Ticket panel in this channel")
+def ticketpanel_cmd(ctx):
+    if is_cmd_disabled(ctx.server_id, "ticketpanel"):
+        return ctx.ephemeral("`/ticketpanel` is disabled on the web dashboard for this server.")
+    if not is_staff(ctx.server_id, ctx.user_id):
+        return ctx.ephemeral("Only server admins can post the ticket panel.")
+    target_cid = re.sub(r"[<#>]", "", cmd_text(ctx)).strip() or ctx.channel_id
+    send_ticket_panel(target_cid)
+    all_cfg = load_all_cfg()
+    sc = get_scfg(ctx.server_id)
+    sc["dash"] = target_cid
+    all_cfg[str(ctx.server_id)] = sc
+    save_all_cfg(all_cfg)
+    ctx.ephemeral(f"Ticket panel posted in <#{target_cid}>!")
 
-        if path == "/logout":
-            return self.redir("/", "tm_sess=; Path=/; Max-Age=0")
+@bot.command(name="claimticket", description="Claim the current open ticket")
+def claimticket_cmd(ctx):
+    if is_cmd_disabled(ctx.server_id, "claimticket"):
+        return ctx.ephemeral("`/claimticket` is disabled on the web dashboard for this server.")
+    if not is_staff(ctx.server_id, ctx.user_id):
+        return ctx.ephemeral("Only staff members can claim tickets.")
+    uname = get_uname(getattr(ctx, "author", None), "Staff")
+    ctx.reply(f"Ticket claimed by <@{ctx.user_id}> (**{uname}**).")
 
-        if path == "/login":
-            if sess:
-                return self.redir("/dashboard")
-            st = secrets.token_urlsafe(12)
-            url = f"{OAUTH_AUTH}?client_id={urllib.parse.quote(CLIENT_ID)}&redirect_uri={urllib.parse.quote(REDIR_URI)}&response_type=code&scope=identify&state={st}"
-            return self.redir(url)
+@bot.command(name="ticketclose", description="Close and delete the current ticket channel")
+def ticketclose_cmd(ctx):
+    if is_cmd_disabled(ctx.server_id, "ticketclose"):
+        return ctx.ephemeral("`/ticketclose` is disabled on the web dashboard for this server.")
+    if not is_staff(ctx.server_id, ctx.user_id):
+        return ctx.ephemeral("Only staff members can close tickets.")
+    reason = cmd_text(ctx) or "Resolved"
+    ctx.reply(f"Closing ticket in 3 seconds... (**Reason:** {reason})")
+    close_ticket_now(ctx.server_id, ctx.channel_id, ctx.user_id, reason)
 
-        if path == "/callback":
-            code = qs.get("code", list(("",))).pop(0)
-            if not code:
-                return self.redir("/")
-            try:
-                tok_data = None
-                last_err = ""
-                attempts = [
-                    (urllib.parse.urlencode({"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET, "grant_type": "authorization_code", "code": code, "redirect_uri": REDIR_URI}).encode(), {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/1.0"}),
-                    (json.dumps({"client_id": CLIENT_ID, "client_secret": CLIENT_SECRET, "grant_type": "authorization_code", "code": code, "redirect_uri": REDIR_URI}).encode(), {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/1.0"}),
-                ]
-                for b_data, hdrs in attempts:
-                    try:
-                        req = urllib.request.Request(OAUTH_TOKEN, data=b_data, headers=hdrs, method="POST")
-                        tok_data = json.loads(urllib.request.urlopen(req, timeout=8).read().decode())
-                        if tok_data.get("access_token"):
-                            break
-                    except urllib.error.HTTPError as he:
-                        last_err = f"{he.code}: {he.read().decode(errors='ignore')}"
-                if not tok_data or not tok_data.get("access_token"):
-                    raise RuntimeError(last_err or "No access_token returned")
-                access = tok_data.get("access_token", "")
-                me_raw = tok_data.get("user") if isinstance(tok_data.get("user"), dict) else decode_jwt(tok_data.get("id_token", "") or access)
-                if not me_raw:
-                    for ep in ("/api/oauth/me", "/api/oauth/userinfo", "/api/me", "/api/user", "/api/users/me", "/api/users/@me", "/oauth/userinfo"):
-                        try:
-                            me_req = urllib.request.Request(f"https://{Y_HOST}{ep}", headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/1.0"})
-                            cand = json.loads(urllib.request.urlopen(me_req, timeout=8).read().decode())
-                            if isinstance(cand, dict):
-                                inner = cand.get("user", cand) if isinstance(cand.get("user"), dict) else cand
-                                if inner.get("id") or inner.get("user_id") or inner.get("sub"):
-                                    me_raw = inner
-                                    break
-                        except Exception:
-                            pass
-                if not me_raw:
-                    raise RuntimeError("Could not fetch Yapin user profile")
-                uid = me_raw.get("id") or me_raw.get("user_id") or me_raw.get("sub")
-                uname = me_raw.get("username") or me_raw.get("preferred_username") or me_raw.get("name") or me_raw.get("display_name") or "user"
-                sid_tok = secrets.token_urlsafe(24)
-                r_cmd("SET", f"tm:sess:{sid_tok}", json.dumps({"id": uid, "username": uname}), "EX", "604800")
-                return self.redir("/dashboard", f"tm_sess={sid_tok}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800")
-            except Exception as e:
-                return self.send_html(page("Login Error", f"<div class='wrap'><div class='panel'><h2 style='color:#ff7a00'>OAuth Callback Error</h2><p style='color:#9ca3af;margin-top:8px'>{e}</p></div></div>"))
-        if path.startswith("/dashboard"):
-            if not sess:
-                return self.redir("/login")
-            all_srvs = []
-            try:
-                cached = r_cmd("GET", "ticketmint:servers")
-                if cached:
-                    all_srvs = json.loads(cached)
-            except Exception:
-                pass
-            for sp in ("/servers", "/me"):
-                res = safe_y("GET", sp)
-                cand = u_list(res, "servers") or (res.get("bot", {}).get("servers", []) if isinstance(res, dict) and isinstance(res.get("bot"), dict) else [])
-                for c in cand:
-                    if c.get("id") and not any(str(x.get("id")) == str(c.get("id")) for x in all_srvs):
-                        all_srvs.append(c)
-            admin_srvs = [s for s in all_srvs if not s.get("owner_id") or str(s.get("owner_id")) == str(sess["id"]) or s.get("owner") is True or is_admin(s.get("id"), sess["id"])]
-            sel_id = qs.get("server", list(("",))).pop(0).strip()
-            if not sel_id:
-                rows = []
-                for s in admin_srvs:
-                    sname = s.get("name", "Server")
-                    ico = f"<img src='{s['icon']}' alt=''>" if s.get("icon") else sname[:1].upper()
-                    mc = f"{s['member_count']} members" if s.get("member_count") else "Ready to configure"
-                    rows.append(f"<a href='/dashboard?server={s['id']}' class='srv-row'><div class='srv-left'><div class='srv-ico'>{ico}</div><div><h3 style='font-size:17px;margin-bottom:3px'>{sname}</h3><small style='color:#9ca3af'>{mc}</small></div></div><span style='color:#ff7a00;font-weight:700;font-size:14px'>Configure &rarr;</span></a>")
-                cards = "".join(rows)
-                add_box = f"<div style='display:flex;gap:10px;flex-wrap:wrap;margin-top:14px'><a href='{INVITE_URL}' class='btn btn-orange'>+ Invite TicketMint to Server</a></div><form method='GET' action='/dashboard' style='display:flex;gap:10px;max-width:440px;margin-top:16px'><input type='text' name='server' placeholder='Or paste Server ID directly...' required><button class='btn btn-dark' type='submit'>Open</button></form>"
-                empty = f"<div class='panel'><p style='margin-bottom:8px'>Add <b>TicketMint</b> to your server to configure it here.</p>{add_box}</div>"
-                footer_inv = f"<div style='text-align:center;margin-top:20px'><a href='{INVITE_URL}' class='btn btn-dark'>+ Invite TicketMint to Another Server</a></div>" if cards else ""
-                return self.send_html(page("Select Server - TicketMint", f"<div class='wrap' style='max-width:760px'><div style='text-align:center;margin:20px 0 32px'><h1 style='font-size:34px;margin-bottom:6px'>Hey, {sess['username']}</h1><p style='color:#9ca3af'>Pick a server to configure.</p></div>{cards if cards else empty}{footer_inv}</div>", sess))
+@bot.command(name="setwelcomechannel", description="Set the welcome channel for automatic welcome cards")
+def setwelcome_cmd(ctx):
+    if is_cmd_disabled(ctx.server_id, "setwelcomechannel"):
+        return ctx.ephemeral("`/setwelcomechannel` is disabled on the web dashboard for this server.")
+    if not is_staff(ctx.server_id, ctx.user_id):
+        return ctx.ephemeral("Only server admins can set the welcome channel.")
+    w_cid = re.sub(r"[<#>]", "", cmd_text(ctx)).strip() or ctx.channel_id
+    all_cfg = load_all_cfg()
+    sc = get_scfg(ctx.server_id)
+    sc["welcome"] = w_cid
+    all_cfg[str(ctx.server_id)] = sc
+    save_all_cfg(all_cfg)
+    ctx.reply(f"Welcome channel saved as <#{w_cid}>!")
+    @bot.button("ticket_open:")
+def on_ticket_open(i):
+    kind = i.custom_id.partition(":")[-1] or "support"
+    titles = {"support": "General Help", "report": "Report Someone", "appeal": "Punishment Appeal"}
+    i.show_modal({
+        "custom_id": f"ticket_modal:{kind}",
+        "title": titles.get(kind, "Open a Ticket"),
+        "components": [
+            {"type": "row", "components": [{"type": "text_input", "custom_id": "subject", "label": "Subject / User", "style": "short", "required": True, "max_length": 80}]},
+            {"type": "row", "components": [{"type": "text_input", "custom_id": "details", "label": "Describe your issue in detail", "style": "paragraph", "required": True, "max_length": 1000}]},
+        ],
+    })
 
-            srv_obj = next((s for s in admin_srvs if str(s.get("id")) == str(sel_id)), None)
-            fetched = u_dict(safe_y("GET", f"/servers/{sel_id}"), "server")
-            if not srv_obj:
-                if fetched and fetched.get("id") and not is_admin(sel_id, sess["id"]):
-                    return self.redir("/dashboard")
-                srv_obj = fetched if fetched and fetched.get("id") else {"id": sel_id, "name": f"Server ({sel_id})"}
-            srv_name = (fetched.get("name") if isinstance(fetched, dict) else None) or srv_obj.get("name", f"Server ({sel_id})")
-            sc = get_scfg(sel_id)
-            meta = {}
-            try:
-                mraw = r_cmd("GET", f"ticketmint:meta:{sel_id}")
-                if mraw:
-                    meta = json.loads(mraw)
-            except Exception:
-                pass
-            roles = u_list(safe_y("GET", f"/servers/{sel_id}/roles"), "roles") or meta.get("roles", [])
-            chs = u_list(safe_y("GET", f"/servers/{sel_id}/channels"), "channels") or meta.get("channels", [])
-            if roles or chs:
-                try:
-                    r_cmd("SET", f"ticketmint:meta:{sel_id}", json.dumps({"roles": roles, "channels": chs}))
-                except Exception:
-                    pass
-            pills = "".join(f"<label class='pill'><input type='checkbox' name='roles' value='{r['id']}' {'checked' if r['id'] in sc['roles'] else ''}><span>{r.get('name', 'Role')}</span></label>" for r in roles if r.get("name") != "@everyone")
-            if not pills:
-                pills = "<span style='color:#9ca3af;font-size:13px'>Make sure <b>python bot.py</b> is running and TicketMint is in this server, then refresh.</span>"
-            is_cat = lambda c: str(c.get("kind", "")).lower() in ("category", "folder") or str(c.get("type", "")).lower() in ("category", "4")
-            is_txt = lambda c: not is_cat(c) and str(c.get("kind", "text")).lower() in ("text", "channel", "") and str(c.get("type", "0")).lower() in ("text", "0", "")
-            cho = "<option value=''>-- Select Ticket Panel Channel --</option>" + "".join(f"<option value='{c['id']}' {'selected' if c['id']==sc['dash'] else ''}>#{c.get('name', 'channel')}</option>" for c in chs if is_txt(c))
-            cao = "<option value=''>None (Optional)</option>" + "".join(f"<option value='{c['id']}' {'selected' if c['id']==sc['cat'] else ''}>{c.get('name', 'Category')}</option>" for c in chs if is_cat(c))
-            lgo = "<option value=''>None (Optional)</option>" + "".join(f"<option value='{c['id']}' {'selected' if c['id']==sc['logs'] else ''}>#{c.get('name', 'logs')}</option>" for c in chs if is_txt(c))
-            saved = "<div style='background:#16a34a22;border:1px solid #16a34a;color:#4ade80;padding:10px 14px;border-radius:9px;margin-bottom:16px'>Saved changes! Your bot remembers these settings automatically.</div>" if qs.get("saved") else ""
-            html = f"""<div class='wrap'><a href='/dashboard' style='color:#9ca3af;font-size:13px'>&larr; Back to Servers</a><h1 style='margin:8px 0 22px'>{srv_name}</h1><div class='layout'><div class='side'><a href='/dashboard?server={sel_id}' class='act'>Tickets & Roles</a><a href='/dashboard'>Switch Server</a></div><div class='panel'>{saved}<form method='POST' action='/save'><input type='hidden' name='server' value='{sel_id}'><div class='field'><label>Admin / Mod Roles</label><small>Members with these roles can view, claim, and close private tickets.</small><div class='pills'>{pills}</div></div><div class='field'><label>Ticket Panel Channel</label><small>Channel where the orange Open a Ticket dashboard gets posted.</small><select name='dash'>{cho}</select></div><div class='field'><label>Ticket Category (Optional)</label><small>Category folder where new private ticket rooms appear.</small><select name='cat'>{cao}</select></div><div class='field'><label>Ticket Logs Channel (Optional)</label><small>Receives an embed log whenever a ticket is closed.</small><select name='logs'>{lgo}</select></div><div style='display:flex;gap:10px;flex-wrap:wrap;padding-top:16px'><button name='act' value='save' class='btn btn-orange'>Save Changes</button><button name='act' value='post' class='btn btn-dark'>Save & Post Ticket Panel</button></div></form></div></div></div>"""
-            return self.send_html(page(f"{srv_name} - TicketMint", html, sess))
+@bot.on_modal(re.compile(r"^ticket_modal:"))
+def on_ticket_modal(i):
+    now = time.time()
+    if now - OPEN_COOLDOWN.get(i.user_id, 0) < 15:
+        return i.ephemeral("Please wait a few seconds before opening another ticket.")
+    OPEN_COOLDOWN[i.user_id] = now
+    kind = i.custom_id.partition(":")[-1] or "support"
+    subj, det = extract_modal_pair(i, "subject", "details")
+    subj = subj or "General Inquiry"
+    det = det or "No additional details provided."
 
-        cta = "Go to Dashboard" if sess else "Authorize & Open Dashboard"
-        home = f"""<div class='hero'><h1>Yapin's cleanest <span>ticket, report & appeal</span> desk.</h1><p>Private support rooms, member reports, and punishment appeals—configured from a fast 24/7 dashboard on desktop and mobile.</p><div class='hero-btns'><a href='/dashboard' class='btn btn-orange'>{cta}</a><a href='{INVITE_URL}' class='btn btn-dark'>+ Invite Bot to Server</a></div></div><div class='grid'><div class='card'><h3 style='color:#ff7a00;margin-bottom:8px'>Private Ticket Rooms</h3><p style='color:#9ca3af;font-size:14px'>Auto-locked channels visible only to the ticket creator and your chosen Mod roles.</p></div><div class='card'><h3 style='color:#ff7a00;margin-bottom:8px'>Reports & Appeals</h3><p style='color:#9ca3af;font-size:14px'>Built-in pop-up forms for General Help, Member Reports, and Punishment Appeals.</p></div><div class='card'><h3 style='color:#ff7a00;margin-bottom:8px'>24/7 Web Control</h3><p style='color:#9ca3af;font-size:14px'>Manage staff roles, ticket categories, and ticket logs from your phone or PC.</p></div></div>"""
-        return self.send_html(page("TicketMint - Yapin' Ticket Bot", home, sess))
+    sc = get_scfg(i.server_id)
+    safe_user = re.sub(r"[^a-z0-9_-]", "", str(getattr(i, "username", "user")).lower())[:14] or "user"
+    overwrites = [
+        {"id": i.server_id, "type": "role", "deny": ["view_channel"]},
+        {"id": i.user_id, "type": "member", "allow": ["view_channel", "send_messages", "read_message_history"]},
+    ]
+    if BOT_SELF_ID:
+        overwrites.append({"id": BOT_SELF_ID, "type": "member", "allow": ["view_channel", "send_messages", "read_message_history", "manage_channels"]})
+    for rid in sc["roles"]:
+        if rid and rid != i.server_id:
+            overwrites.append({"id": rid, "type": "role", "allow": ["view_channel", "send_messages", "read_message_history"]})
 
-    def do_POST(self):
-        data = urllib.parse.parse_qs(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode())
-        sess = self.get_sess()
-        sid = data.get("server", list(("",))).pop(0)
-        if sess and sid:
-            all_cfg = load_all_cfg()
-            cur = get_scfg(sid)
-            all_cfg[sid] = {"roles": data.get("roles", []), "dash": data.get("dash", list(("",))).pop(0), "cat": data.get("cat", list(("",))).pop(0), "logs": data.get("logs", list(("",))).pop(0), "welcome": cur.get("welcome", "")}
-            save_all_cfg(all_cfg)
-            if data.get("act", list(("",))).pop(0) == "post" and all_cfg[sid]["dash"]:
-                post_panel(all_cfg[sid]["dash"])
-        return self.redir(f"/dashboard?server={sid}&saved=1")
+    ch_body = {"name": f"{kind}-{safe_user}", "kind": "text", "permission_overwrites": overwrites}
+    if sc["cat"]:
+        ch_body["parent_id"] = sc["cat"]
+
+    created = u_dict(bot.api("POST", f"/servers/{i.server_id}/channels", ch_body), "channel")
+    new_cid = created.get("id")
+    if not new_cid and sc["cat"]:
+        ch_body.pop("parent_id", None)
+        created = u_dict(bot.api("POST", f"/servers/{i.server_id}/channels", ch_body), "channel")
+        new_cid = created.get("id")
+    if not new_cid:
+        fallback_body = {"name": f"{kind}-{safe_user}", "kind": "text"}
+        created = u_dict(bot.api("POST", f"/servers/{i.server_id}/channels", fallback_body), "channel")
+        new_cid = created.get("id")
+
+    if not new_cid:
+        return i.ephemeral("Could not create ticket channel—check that TicketMint has Manage Channels permission.")
+
+    i.ephemeral(f"Private ticket created: <#{new_cid}>")
+    mentions = " ".join(f"<@&{r}>" for r in sc["roles"] if r)
+    btns = row(btn("Claim Ticket", "ticket:claim", "success"), btn("Close Ticket", "ticket:close", "danger"))
+    bot.api("POST", f"/channels/{new_cid}/messages", {
+        "content": f"<@{i.user_id}> {mentions}".strip(),
+        "embeds": [{
+            "title": f"{kind.title()} • {subj}",
+            "description": f"**From:** <@{i.user_id}>\n\n**Details:**\n{det}",
+            "color": 0xFF7A00,
+        }],
+        "components": [btns],
+    })
+
+def handle_claim(i):
+    try:
+        sid = getattr(i, "server_id", None) or (getattr(i, "data", {}) or {}).get("server_id")
+        if sid and not is_staff(sid, i.user_id):
+            return i.ephemeral("Only staff members can claim tickets.")
+        uname = get_uname(getattr(i, "author", None), getattr(i, "username", "Staff"))
+        i.reply(f"Ticket claimed by <@{i.user_id}> (**{uname}**).")
+    except Exception as e:
+        print("[Claim Error]:", e)
+
+def handle_close(i):
+    try:
+        sid = getattr(i, "server_id", None) or (getattr(i, "data", {}) or {}).get("server_id")
+        cid = getattr(i, "channel_id", None) or (getattr(i, "data", {}) or {}).get("channel_id")
+        if sid and not is_staff(sid, i.user_id):
+            return i.ephemeral("Only staff members can close tickets.")
+        i.reply("Closing ticket in 3 seconds...")
+        if sid:
+            close_ticket_now(sid, cid, i.user_id, "Closed via button")
+        elif cid:
+            time.sleep(3)
+            bot.api("DELETE", f"/channels/{cid}")
+    except Exception as e:
+        print("[Close Error]:", e)
+
+@bot.button("ticket:claim")
+def btn_claim_new(i):
+    handle_claim(i)
+
+@bot.button("ticket_claim")
+def btn_claim_old(i):
+    handle_claim(i)
+
+@bot.button("ticket:close")
+def btn_close_new(i):
+    handle_close(i)
+
+@bot.button("ticket_close")
+def btn_close_old(i):
+    handle_close(i)
+
+bot.run()
