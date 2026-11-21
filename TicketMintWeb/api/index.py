@@ -64,11 +64,11 @@ def r_cmd(*args):
                 headers={"Authorization": f"Bearer {REDIS_TOKEN}", "Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with urllib.request.urlopen(req, timeout=4) as resp:
                 return json.loads(resp.read().decode("utf-8")).get("result")
         except Exception:
             if attempt == 0:
-                time.sleep(0.15)
+                time.sleep(0.1)
             else:
                 return None
 
@@ -102,7 +102,7 @@ def y_api(method, path, body=None, bearer=None, base_url=None):
     hdrs = {
         "Authorization": f"Bearer {bearer or BOT_TOKEN}",
         "Content-Type": "application/json",
-        "User-Agent": "TicketMintWeb/2.1",
+        "User-Agent": "TicketMintWeb/2.2",
     }
     data = json.dumps(body).encode("utf-8") if body is not None else None
     root = (base_url or API_BASE).rstrip("/")
@@ -110,23 +110,19 @@ def y_api(method, path, body=None, bearer=None, base_url=None):
     for attempt in range(2):
         try:
             req = urllib.request.Request(f"{root}{path}", data=data, headers=hdrs, method=method)
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with urllib.request.urlopen(req, timeout=4) as resp:
                 txt = resp.read().decode("utf-8")
                 return json.loads(txt) if txt else {}
         except urllib.error.HTTPError as he:
             last_exc = he
             if he.code in (429, 500, 502, 503, 504) and attempt == 0:
-                retry_hdr = he.headers.get("Retry-After") if he.headers else None
-                try:
-                    time.sleep(min(1.5, max(0.2, float(retry_hdr or 0.25))))
-                except Exception:
-                    time.sleep(0.25)
+                time.sleep(0.15)
                 continue
             raise
         except Exception as e:
             last_exc = e
             if attempt == 0:
-                time.sleep(0.2)
+                time.sleep(0.15)
                 continue
             raise last_exc
 
@@ -162,8 +158,8 @@ def is_voice_item(c):
 
 def sync_server_metadata(sid, existing_meta=None):
     meta = dict(existing_meta or {})
-    roles = meta.get("roles", [])
-    chs = meta.get("channels", [])
+    roles = meta.get("roles", []) if isinstance(meta.get("roles"), list) else []
+    chs = meta.get("channels", []) if isinstance(meta.get("channels"), list) else []
     extra_cats = list(meta.get("categories", [])) if isinstance(meta.get("categories"), list) else []
 
     srv_full = safe_y("GET", f"/servers/{sid}")
@@ -179,7 +175,7 @@ def sync_server_metadata(sid, existing_meta=None):
     if c_list:
         chs = c_list
 
-    for src in (c_res, fetched, srv_full, safe_y("GET", f"/servers/{sid}/categories")):
+    for src in (c_res, fetched, srv_full):
         if isinstance(src, dict):
             for key in ("categories", "folders", "groups"):
                 if isinstance(src.get(key), list):
@@ -211,12 +207,6 @@ def sync_server_metadata(sid, existing_meta=None):
 
     for pid_s, child_names in children_by_parent.items():
         if pid_s not in cat_map:
-            ch_info = safe_y("GET", f"/channels/{pid_s}")
-            ch_obj = ch_info.get("channel", ch_info) if isinstance(ch_info, dict) else {}
-            cname = pick_name(ch_obj)
-            if cname:
-                cat_map[pid_s] = cname
-        if pid_s not in cat_map:
             preview = ", ".join(child_names[:2])
             if len(child_names) > 2:
                 preview += f" +{len(child_names) - 2}"
@@ -235,12 +225,7 @@ def post_raw_message(cid, payload):
     first_desc = embeds_list[0].get("description", "") if embeds_list and isinstance(embeds_list[0], dict) else ""
     plain_text = base_dict.get("content") or first_desc or "TicketMint"
 
-    variants = [
-        base_dict,
-        {"content": plain_text},
-        {"text": plain_text},
-        {"message": plain_text},
-    ]
+    variants = [base_dict, {"content": plain_text}, {"text": plain_text}, {"message": plain_text}]
     endpoints = [
         (API_BASE, f"/channels/{cid}/messages"),
         (f"https://{Y_HOST}/api", f"/bot/channels/{cid}/messages"),
@@ -325,26 +310,27 @@ def get_scfg(sid):
         pass
     if raw is None:
         raw = load_all_cfg().get(str(sid), {})
-    if isinstance(raw, list):
-        raw = {"roles": raw}
+    if not isinstance(raw, dict):
+        raw = {"roles": raw} if isinstance(raw, list) else {}
     disabled = raw.get("disabled_cmds", [])
+    roles = raw.get("roles", [])
     return {
-        "roles": raw.get("roles", []),
-        "autorole": raw.get("autorole", ""),
-        "verify_role": raw.get("verify_role", ""),
-        "verify_channel": raw.get("verify_channel", ""),
-        "active_preset": raw.get("active_preset", ""),
-        "dash": raw.get("dash", ""),
-        "cat": raw.get("cat", ""),
-        "logs": raw.get("logs", ""),
-        "welcome": raw.get("welcome", ""),
-        "w_title": raw.get("w_title", "Welcome!"),
-        "w_msg": raw.get("w_msg", "Welcome {user} to {server}! You are our {ordinal} member!"),
-        "w_banner": raw.get("w_banner", ""),
-        "w_color": raw.get("w_color", "#ff7a00"),
+        "roles": roles if isinstance(roles, list) else [],
+        "autorole": str(raw.get("autorole", "") or ""),
+        "verify_role": str(raw.get("verify_role", "") or ""),
+        "verify_channel": str(raw.get("verify_channel", "") or ""),
+        "active_preset": str(raw.get("active_preset", "") or ""),
+        "dash": str(raw.get("dash", "") or ""),
+        "cat": str(raw.get("cat", "") or ""),
+        "logs": str(raw.get("logs", "") or ""),
+        "welcome": str(raw.get("welcome", "") or ""),
+        "w_title": str(raw.get("w_title", "Welcome!") or "Welcome!"),
+        "w_msg": str(raw.get("w_msg", "Welcome {user} to {server}! You are our {ordinal} member!") or "Welcome {user} to {server}! You are our {ordinal} member!"),
+        "w_banner": str(raw.get("w_banner", "") or ""),
+        "w_color": str(raw.get("w_color", "#ff7a00") or "#ff7a00"),
         "w_card": bool(raw.get("w_card", False)),
-        "goodbye": raw.get("goodbye", ""),
-        "g_msg": raw.get("g_msg", "{user} just left {server}. We now have {member_count} members."),
+        "goodbye": str(raw.get("goodbye", "") or ""),
+        "g_msg": str(raw.get("g_msg", "{user} just left {server}. We now have {member_count} members.") or "{user} just left {server}. We now have {member_count} members."),
         "disabled_cmds": disabled if isinstance(disabled, list) else [],
         "anti_link": bool(raw.get("anti_link", True)),
         "anti_caps": bool(raw.get("anti_caps", False)),
@@ -352,9 +338,9 @@ def get_scfg(sid):
         "anti_spam": bool(raw.get("anti_spam", True)),
         "max_tickets": int(raw.get("max_tickets", 2) or 2),
         "ticket_cooldown": int(raw.get("ticket_cooldown", 30) or 0),
-        "blocked_words": raw.get("blocked_words", ""),
-        "warn_word_msg": raw.get("warn_word_msg", "{user}, that word is not allowed here."),
-        "warn_link_msg": raw.get("warn_link_msg", "{user}, links are not allowed in this channel."),
+        "blocked_words": str(raw.get("blocked_words", "") or ""),
+        "warn_word_msg": str(raw.get("warn_word_msg", "{user}, that word is not allowed here.") or "{user}, that word is not allowed here."),
+        "warn_link_msg": str(raw.get("warn_link_msg", "{user}, links are not allowed in this channel.") or "{user}, links are not allowed in this channel."),
     }
 
 
@@ -364,9 +350,9 @@ def is_admin(sid, uid):
         if str(srv.get("owner_id", "")) == str(uid):
             return True
         mem = u_dict(safe_y("GET", f"/servers/{sid}/members/{uid}"), "member")
-        mr = set(mem.get("roles", []))
+        mr = set(mem.get("roles", []) or [])
         for r in u_list(safe_y("GET", f"/servers/{sid}/roles"), "roles"):
-            if r.get("id") in mr:
+            if isinstance(r, dict) and r.get("id") in mr:
                 p = r.get("permissions", {})
                 if isinstance(p, dict) and (p.get("administrator") or p.get("manage_server") or p.get("manage_channels")):
                     return True
@@ -512,7 +498,6 @@ document.addEventListener('submit',function(e){
   if(sub&&!sub.dataset.busy){
     sub.dataset.busy='1';
     sub.style.opacity='0.75';
-    setTimeout(function(){sub.disabled=true;},0);
   }
 });
 </script>
@@ -536,7 +521,7 @@ def page(title, body, user=None):
 
 def decode_jwt(tok):
     try:
-        parts = tok.split(".")
+        parts = str(tok).split(".")
         if len(parts) < 2:
             return None
         p = parts.pop(1)
@@ -582,6 +567,14 @@ class handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        try:
+            self._handle_get()
+        except Exception as e:
+            self.send_html(
+                page("Dashboard Error", f"<div class='wrap'><div class='panel'><h2 style='color:#ff7a00'>Something went wrong</h2><p style='color:#9ca3af;margin-top:8px'>{esc(clean_err(e))}</p><div style='margin-top:14px'><a href='/dashboard' class='btn btn-orange'>Back to Servers</a></div></div></div>")
+            )
+
+    def _handle_get(self):
         u = urllib.parse.urlsplit(self.path)
         path, qs = u.path, urllib.parse.parse_qs(u.query)
         sess = self.get_sess()
@@ -616,7 +609,7 @@ class handler(BaseHTTPRequestHandler):
                             "code": code,
                             "redirect_uri": REDIR_URI,
                         }).encode("utf-8"),
-                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/2.1"},
+                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/2.2"},
                     ),
                     (
                         json.dumps({
@@ -626,13 +619,13 @@ class handler(BaseHTTPRequestHandler):
                             "code": code,
                             "redirect_uri": REDIR_URI,
                         }).encode("utf-8"),
-                        {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/2.1"},
+                        {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/2.2"},
                     ),
                 ]
                 for b_data, hdrs in attempts:
                     try:
                         req = urllib.request.Request(OAUTH_TOKEN, data=b_data, headers=hdrs, method="POST")
-                        tok_data = json.loads(urllib.request.urlopen(req, timeout=6).read().decode("utf-8"))
+                        tok_data = json.loads(urllib.request.urlopen(req, timeout=5).read().decode("utf-8"))
                         if tok_data.get("access_token"):
                             break
                     except urllib.error.HTTPError as he:
@@ -646,9 +639,9 @@ class handler(BaseHTTPRequestHandler):
                         try:
                             me_req = urllib.request.Request(
                                 f"https://{Y_HOST}{ep}",
-                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/2.1"},
+                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/2.2"},
                             )
-                            cand = json.loads(urllib.request.urlopen(me_req, timeout=6).read().decode("utf-8"))
+                            cand = json.loads(urllib.request.urlopen(me_req, timeout=5).read().decode("utf-8"))
                             if isinstance(cand, dict):
                                 inner = cand.get("user", cand) if isinstance(cand.get("user"), dict) else cand
                                 if inner.get("id") or inner.get("user_id") or inner.get("sub"):
@@ -675,7 +668,9 @@ class handler(BaseHTTPRequestHandler):
             try:
                 cached = r_cmd("GET", "ticketmint:servers")
                 if cached:
-                    all_srvs = json.loads(cached)
+                    parsed = json.loads(cached)
+                    if isinstance(parsed, list):
+                        all_srvs = parsed
             except Exception:
                 pass
             if not all_srvs:
@@ -683,14 +678,16 @@ class handler(BaseHTTPRequestHandler):
                     res = safe_y("GET", sp)
                     cand = u_list(res, "servers") or (res.get("bot", {}).get("servers", []) if isinstance(res, dict) and isinstance(res.get("bot"), dict) else [])
                     for c in cand:
-                        if c.get("id") and not any(str(x.get("id")) == str(c.get("id")) for x in all_srvs):
+                        if isinstance(c, dict) and c.get("id") and not any(str(x.get("id")) == str(c.get("id")) for x in all_srvs):
                             all_srvs.append(c)
             admin_srvs = [
                 s for s in all_srvs
-                if not s.get("owner_id")
-                or str(s.get("owner_id")) == str(sess["id"])
-                or s.get("owner") is True
-                or is_admin(s.get("id"), sess["id"])
+                if isinstance(s, dict) and (
+                    not s.get("owner_id")
+                    or str(s.get("owner_id")) == str(sess["id"])
+                    or s.get("owner") is True
+                    or is_admin(s.get("id"), sess["id"])
+                )
             ]
             sel_id = qs.get("server", [""])[0].strip()
             if not sel_id:
@@ -724,7 +721,9 @@ class handler(BaseHTTPRequestHandler):
             try:
                 mraw = r_cmd("GET", f"ticketmint:meta:{sel_id}")
                 if mraw:
-                    meta = json.loads(mraw)
+                    parsed_m = json.loads(mraw)
+                    if isinstance(parsed_m, dict):
+                        meta = parsed_m
             except Exception:
                 pass
 
@@ -735,22 +734,21 @@ class handler(BaseHTTPRequestHandler):
             elif not srv_obj:
                 srv_full = safe_y("GET", f"/servers/{sel_id}")
                 fetched = u_dict(srv_full, "server")
-                if fetched and fetched.get("id") and not is_admin(sel_id, sess["id"]):
+                if isinstance(fetched, dict) and fetched.get("id") and not is_admin(sel_id, sess["id"]):
                     return self.redir("/dashboard")
 
-            if not srv_obj:
-                srv_obj = fetched if fetched and fetched.get("id") else {"id": sel_id, "name": f"Server ({sel_id})"}
-            srv_name = fetched.get("name") or srv_obj.get("name", f"Server ({sel_id})")
-            m_count = fetched.get("member_count") or srv_obj.get("member_count") or 5
+            base_srv = srv_obj if isinstance(srv_obj, dict) else (fetched if isinstance(fetched, dict) and fetched.get("id") else {"id": sel_id, "name": f"Server ({sel_id})"})
+            srv_name = (fetched.get("name") if isinstance(fetched, dict) else None) or base_srv.get("name") or f"Server ({sel_id})"
+            m_count = (fetched.get("member_count") if isinstance(fetched, dict) else None) or base_srv.get("member_count") or 5
             sc = get_scfg(sel_id)
             tab = qs.get("tab", ["tickets"])[0].strip().lower()
             valid_tabs = ("tickets", "welcome", "announce", "automod", "verification", "commands", "presets")
             if tab not in valid_tabs:
                 tab = "tickets"
 
-            roles = meta.get("roles", [])
-            chs = meta.get("channels", [])
-            cat_chs = meta.get("categories", [])
+            roles = meta.get("roles", []) if isinstance(meta.get("roles"), list) else []
+            chs = meta.get("channels", []) if isinstance(meta.get("channels"), list) else []
+            cat_chs = meta.get("categories", []) if isinstance(meta.get("categories"), list) else []
 
             txt_chs = [c for c in chs if isinstance(c, dict) and not is_cat_item(c) and not is_voice_item(c)]
             if not txt_chs:
@@ -759,6 +757,8 @@ class handler(BaseHTTPRequestHandler):
             def ch_opts(items, selected_id, empty_label, prefix="#"):
                 out = [f"<option value=''>{esc(empty_label)}</option>"]
                 for c in items:
+                    if not isinstance(c, dict):
+                        continue
                     cid = str(c.get("id", ""))
                     cname = c.get("name", "channel")
                     out.append(f"<option value='{esc(cid)}' {'selected' if cid == str(selected_id) else ''}>{esc(prefix)}{esc(cname)}</option>")
@@ -784,7 +784,7 @@ class handler(BaseHTTPRequestHandler):
                 f"</div>"
             )
 
-            non_everyone_roles = [r for r in roles if r.get("name") != "@everyone"]
+            non_everyone_roles = [r for r in roles if isinstance(r, dict) and r.get("name") != "@everyone"]
             pills = "".join(
                 f"<label class='pill'><input type='checkbox' name='roles' value='{esc(r['id'])}' {'checked' if r['id'] in sc['roles'] else ''}><span>{esc(r.get('name', 'Role'))}</span></label>"
                 for r in non_everyone_roles
@@ -957,6 +957,14 @@ class handler(BaseHTTPRequestHandler):
         return self.send_html(page("TicketMint - Yapin' Bot", home, sess))
 
     def do_POST(self):
+        try:
+            self._handle_post()
+        except Exception as e:
+            self.send_html(
+                page("Save Error", f"<div class='wrap'><div class='panel'><h2 style='color:#ff7a00'>Action Failed</h2><p style='color:#9ca3af;margin-top:8px'>{esc(clean_err(e))}</p><div style='margin-top:14px'><a href='/dashboard' class='btn btn-orange'>Back to Dashboard</a></div></div></div>")
+            )
+
+    def _handle_post(self):
         length = int(self.headers.get("Content-Length", 0) or 0)
         raw_body = self.rfile.read(length).decode("utf-8", errors="ignore")
         data = urllib.parse.parse_qs(raw_body)
@@ -974,7 +982,9 @@ class handler(BaseHTTPRequestHandler):
             try:
                 mraw = r_cmd("GET", f"ticketmint:meta:{sid}")
                 if mraw:
-                    existing_meta = json.loads(mraw)
+                    parsed_m = json.loads(mraw)
+                    if isinstance(parsed_m, dict):
+                        existing_meta = parsed_m
             except Exception:
                 pass
             sync_server_metadata(sid, existing_meta)
