@@ -1,4 +1,4 @@
-import base64, html, json, os, random, re, secrets, time, urllib.error, urllib.parse, urllib.request
+import base64, gzip, html, json, os, random, re, secrets, time, urllib.error, urllib.parse, urllib.request
 from http.server import BaseHTTPRequestHandler
 
 BOT_TOKEN = os.getenv("YAPPER_BOT_TOKEN", "yb_23404489.PlvFt0GgzYy6Z-SGp8ZHfSvOh0io7LhVL7KggSTY")
@@ -622,7 +622,7 @@ def page(title, body, user=None):
         else f"{inv} <a href='/login' class='btn btn-orange'>Authorize with Yapin'</a>"
     )
     return (
-        f"<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+        f"<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
         f"<title>{esc(title)}</title><style>{CSS}</style></head><body>"
         f"<div class='nav'><a href='/' class='brand'><span class='badge'>TM</span> TicketMint</a><div class='nav-links'>{right}</div></div>"
         f"{body}{INSTANT_JS}</body></html>"
@@ -655,10 +655,14 @@ class handler(BaseHTTPRequestHandler):
             return None
 
     def send_html(self, html_body, cookie=None):
-        out = html_body.encode("utf-8")
+        raw_bytes = html_body.encode("utf-8")
+        ae = self.headers.get("Accept-Encoding", "")
+        use_gz = "gzip" in ae and len(raw_bytes) > 1024
+        out = gzip.compress(raw_bytes, compresslevel=5) if use_gz else raw_bytes
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        if use_gz:
+            self.send_header("Content-Encoding", "gzip")
         self.send_header("Content-Length", str(len(out)))
         if cookie:
             self.send_header("Set-Cookie", cookie)
