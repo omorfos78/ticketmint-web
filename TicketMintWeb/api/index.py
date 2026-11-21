@@ -96,8 +96,8 @@ def load_all_cfg():
 def save_all_cfg(d, sid=None):
     try:
         r_cmd("SET", "ticketmint:cfg", json.dumps(d))
-        if sid and str(sid) in d:
-            r_cmd("SET", f"ticketmint:cfg:{sid}", json.dumps(d[str(sid)]))
+        if sid and sid in d:
+            r_cmd("SET", f"ticketmint:cfg:{sid}", json.dumps(d[sid]))
     except Exception:
         pass
 
@@ -1313,13 +1313,24 @@ class handler(BaseHTTPRequestHandler):
                     rc_args = data.get("run_cmd_args", [""])[0].strip()
                     if not rc_name:
                         return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote('Pick a command to run.')}")
+                    if rc_name in cur.get("disabled_cmds", []):
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote('That command is currently disabled.')}")
+                    queue_outbox({
+                        "type": "run_command",
+                        "command": rc_name,
+                        "server_id": sid,
+                        "channel_id": rc_ch,
+                        "args": rc_args,
+                        "user_id": sess["id"],
+                        "username": sess["username"],
+                    })
+                    sname = resolve_server_name(sid)
                     if rc_name == "ticketpanel":
                         ok, err = post_panel(rc_ch, sid=sid)
                         if not ok:
                             return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
                         return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
                     if rc_name == "verifypanel":
-                        sname = resolve_server_name(sid)
                         ok, err = post_verify_panel(rc_ch, sname, sid=sid)
                         if not ok:
                             return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
@@ -1359,17 +1370,153 @@ class handler(BaseHTTPRequestHandler):
                         if not ok:
                             return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
                         return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
-                    ok = queue_outbox({
-                        "type": "run_command",
-                        "command": rc_name,
-                        "server_id": sid,
-                        "channel_id": rc_ch,
-                        "args": rc_args,
-                        "user_id": sess["id"],
-                        "username": sess["username"],
-                    })
-                    if not ok:
-                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote('Could not queue command.')}")
+                    if rc_name == "claimticket":
+                        t_room, sep, reason = rc_args.partition("|")
+                        t_label = t_room.strip() or "#ticket-1898"
+                        t_reason = reason.strip() if sep else (rc_args or "Claimed via web")
+                        formatted = format_ticket_log_message(cur["ticket_claim_msg"], f"@{sess['username']}", t_label, reason=t_reason, server_name=sname, claimer=f"@{sess['username']}")
+                        log_ch = cur["logs"] or rc_ch
+                        ok, err = send_msg_smart(log_ch, title="🛡️ Ticket Claimed", description=formatted, color_hex="#ff7a00", footer=f"TicketMint • {sname}", kind="ticket_claim", extra={"server_id": sid, "ticket": t_label, "reason": t_reason})
+                        if not ok:
+                            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+                    if rc_name == "ticketclose":
+                        t_room, sep, reason = rc_args.partition("|")
+                        t_label = t_room.strip() or "#ticket-1898"
+                        t_reason = reason.strip() if sep else (rc_args or "Closed via web")
+                        formatted = format_ticket_log_message(cur["ticket_close_msg"], f"@{sess['username']}", t_label, reason=t_reason, server_name=sname, claimer=f"@{sess['username']}")
+                        log_ch = cur["logs"] or rc_ch
+                        ok, err = send_msg_smart(log_ch, title="🔒 Ticket Closed", description=formatted, color_hex="#ef4444", footer=f"TicketMint • {sname}", kind="ticket_close", extra={"server_id": sid, "ticket": t_label, "reason": t_reason})
+                        if not ok:
+                            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+                    if rc_name == "modroles":
+                        parts = [p.strip() for p in rc_args.split() if p.strip()]
+                        if len(parts) >= 2 and parts[0].lower() in ("add", "remove", "del", "rm"):
+                            op, rid = parts[0].lower(), parts[1]
+                            rset = [str(x) for x in cur["roles"]]
+                            if op == "add" and rid not in rset:
+                                rset.append(rid)
+                            elif op in ("remove", "del", "rm"):
+                                rset = [x for x in rset if x != rid]
+                            cur["roles"] = rset
+                            all_cfg[sid] = cur
+                            save_all_cfg(all_cfg, sid)
+                        ok, err = send_msg_smart(rc_ch, title="🛡️ Staff / Mod Roles", description=f"Configured mod roles: {', '.join(cur['roles']) or 'None'}", color_hex="#ff7a00", kind="send_message", extra={"server_id": sid})
+                        if not ok:
+                            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+                    if rc_name == "setwelcomechannel":
+                        target_w = rc_args.strip() or rc_ch
+                        cur["welcome"] = target_w
+                        all_cfg[sid] = cur
+                        save_all_cfg(all_cfg, sid)
+                        ok, err = send_msg_smart(rc_ch, content=f"✅ Welcome channel set to <#{target_w}> by @{sess['username']}.", kind="send_message", extra={"server_id": sid})
+                        if not ok:
+                            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+                    if rc_name == "warn":
+                        target_u, sep, reason = rc_args.partition("|") if "|" in rc_args else (rc_args.split(" ", 1)[0], " ", rc_args.split(" ", 1)[1] if " " in rc_args else "")
+                        w_user = target_u.strip() or "Member"
+                        w_reason = reason.strip() or "Rule violation"
+                        ok, err = send_msg_smart(rc_ch, title="⚠️ Official Warning", description=f"**User:** {w_user}\n**Moderator:** @{sess['username']}\n**Reason:** {w_reason}", color_hex="#f59e0b", kind="warn", extra={"server_id": sid, "target": w_user, "reason": w_reason})
+                        if not ok:
+                            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+                    if rc_name == "clear":
+                        amt = rc_args.strip() or "10"
+                        ok, err = send_msg_smart(rc_ch, content=f"🧹 Bulk clear (**{esc(amt)}** messages) requested by @{sess['username']}.", kind="clear", extra={"server_id": sid, "amount": amt})
+                        if not ok:
+                            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+                    if rc_name == "slowmode":
+                        secs = rc_args.strip() or "0"
+                        ok, err = send_msg_smart(rc_ch, content=f"⏱️ Channel slowmode set to **{esc(secs)}s** by @{sess['username']}.", kind="slowmode", extra={"server_id": sid, "seconds": secs})
+                        if not ok:
+                            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+                    if rc_name == "role":
+                        ok, err = send_msg_smart(rc_ch, content=f"🎭 Role action (`{esc(rc_args or 'toggle')}`) triggered by @{sess['username']}.", kind="role", extra={"server_id": sid, "args": rc_args})
+                        if not ok:
+                            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+                    if rc_name == "pingrole":
+                        parts = [p.strip() for p in rc_args.split() if p.strip()]
+                        if len(parts) >= 2 and parts[0].lower() in ("allow", "protect", "remove"):
+                            mode, rid = parts[0].lower(), parts[1]
+                            if mode == "allow" and rid not in cur["allowed_ping_roles"]:
+                                cur["allowed_ping_roles"].append(rid)
+                            elif mode == "protect" and rid not in cur["protected_ping_roles"]:
+                                cur["protected_ping_roles"].append(rid)
+                            elif mode == "remove":
+                                cur["allowed_ping_roles"] = [x for x in cur["allowed_ping_roles"] if str(x) != rid]
+                                cur["protected_ping_roles"] = [x for x in cur["protected_ping_roles"] if str(x) != rid]
+                            all_cfg[sid] = cur
+                            save_all_cfg(all_cfg, sid)
+                        ok, err = send_msg_smart(rc_ch, title="🔔 Role Ping Rules", description=f"Allowed: {', '.join(cur['allowed_ping_roles']) or 'None'}\nProtected: {', '.join(cur['protected_ping_roles']) or 'None'}", color_hex="#ff7a00", kind="send_message", extra={"server_id": sid})
+                        if not ok:
+                            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+                    if rc_name in ("pfp", "makeitquote", "replyquote"):
+                        label_map = {"pfp": "🖼️ Profile Picture", "makeitquote": "💬 Quote Card", "replyquote": "💬 Reply Quote"}
+                        ok, err = send_msg_smart(rc_ch, title=label_map[rc_name], description=f"{rc_args or f'@{sess[\"username\"]}'}\nRequested by @{sess['username']}", color_hex="#ff7a00", kind=rc_name, extra={"server_id": sid, "args": rc_args})
+                        if not ok:
+                            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+                    if rc_name == "afk":
+                        reason = rc_args or "AFK"
+                        r_cmd("SET", f"ticketmint:afk:{sid}:{sess['id']}", json.dumps({"reason": reason, "ts": int(time.time())}))
+                        ok, err = send_msg_smart(rc_ch, content=f"💤 **@{sess['username']}** is now AFK: *{esc(reason)}*", kind="afk", extra={"server_id": sid, "reason": reason})
+                        if not ok:
+                            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+                    if rc_name == "serverinfo":
+                        fetched = u_dict(safe_y("GET", f"/servers/{sid}"), "server")
+                        m_cnt = (fetched.get("member_count") if isinstance(fetched, dict) else None) or "N/A"
+                        ok, err = send_msg_smart(
+                            rc_ch,
+                            title=f"📊 {sname}",
+                            description=f"**Server ID:** `{sid}`\n**Members:** {m_cnt}\n**Anti-Link:** {cur['anti_link']} • **Word Filter:** {cur['word_filter']} • **Anti-Spam:** {cur['anti_spam']}",
+                            color_hex="#ff7a00",
+                            kind="send_message",
+                            extra={"server_id": sid},
+                        )
+                        if not ok:
+                            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+                    if rc_name == "userinfo":
+                        target_u = rc_args or f"@{sess['username']}"
+                        is_st = str(sess["id"]) in set(str(x) for x in cur["roles"])
+                        ok, err = send_msg_smart(
+                            rc_ch,
+                            title="👤 User Info",
+                            description=f"**User:** {esc(target_u)}\n**ID:** `{sess['id']}`\n**Staff in Config:** {'Yes' if is_st else 'No'}",
+                            color_hex="#ff7a00",
+                            kind="send_message",
+                            extra={"server_id": sid},
+                        )
+                        if not ok:
+                            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
+                    if rc_name == "poll":
+                        q_part, sep, opts_part = rc_args.partition("|")
+                        question = q_part.strip() or "Quick Poll"
+                        choices = [c.strip() for c in opts_part.split(",") if c.strip()] if sep else ["Yes", "No"]
+                        if len(choices) < 2:
+                            choices = ["Yes", "No"]
+                        num_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣"]
+                        lines = "\n".join(f"{num_emojis[i] if i < len(num_emojis) else '•'} {esc(ch)}" for i, ch in enumerate(choices[:6]))
+                        ok, err = send_msg_smart(
+                            rc_ch,
+                            title=f"📊 {question}",
+                            description=f"{lines}\n\n-# Poll by @{sess['username']} • TicketMint",
+                            color_hex="#ff7a00",
+                            kind="poll",
+                            extra={"server_id": sid, "question": question, "choices": choices[:6]},
+                        )
+                        if not ok:
+                            return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&err={urllib.parse.quote(err)}")
+                        return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
                     return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&sent=1")
 
                 enabled = set(data.get("enabled_cmds", []))
