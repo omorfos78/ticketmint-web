@@ -14,20 +14,27 @@ SITE_HOST = "ticketmint-web." + "vercel.app"
 REDIR_URI = f"https://{SITE_HOST}/callback"
 INVITE_URL = "https://" + "yapin.gg/bot/23404489-32ad-42d7-ac93-c1ba71cb2574"
 
+# (key, display_label, description, mod_only)
 ALL_COMMANDS = [
-    ("ticketpanel", "/ticketpanel", "Post the orange Open a Ticket panel"),
-    ("claimticket", "/claimticket", "Claim an open ticket room"),
-    ("ticketclose", "/ticketclose", "Close and log an active ticket"),
-    ("modroles", "/modroles", "Add, remove, or view staff roles"),
-    ("setwelcomechannel", "/setwelcomechannel", "Set the automatic welcome channel"),
-    ("verifypanel", "/verifypanel", "Post a 1-click member verification panel"),
-    ("announce", "/announce", "Post styled announcements in chat"),
-    ("warn", "/warn", "Issue an official staff warning to a user"),
-    ("clear", "/clear", "Bulk delete recent messages in a channel"),
-    ("slowmode", "/slowmode", "Set channel slowmode timer"),
-    ("pfp", "/pfp", "View any member's full-size profile picture"),
-    ("makeitquote", "/makeitquote", "Generate a quote card PNG from text"),
-    ("replyquote", "@TicketMint Reply Quote", "Reply to a message and ping @TicketMint to quote it"),
+    ("ticketpanel", "/ticketpanel", "Post the orange Open a Ticket panel", True),
+    ("claimticket", "/claimticket", "Claim an open ticket room", True),
+    ("ticketclose", "/ticketclose", "Close and log an active ticket", True),
+    ("modroles", "/modroles", "Add, remove, or view staff roles", True),
+    ("setwelcomechannel", "/setwelcomechannel", "Set the automatic welcome channel", True),
+    ("verifypanel", "/verifypanel", "Post a 1-click member verification panel", True),
+    ("announce", "/announce", "Post styled announcements in chat", True),
+    ("warn", "/warn", "Issue an official staff warning to a user", True),
+    ("clear", "/clear", "Bulk delete recent messages in a channel", True),
+    ("slowmode", "/slowmode", "Set channel slowmode timer", True),
+    ("role", "/role", "Add or remove a role on a member", True),
+    ("pingrole", "/pingrole", "Manage allowed or protected pingable roles", True),
+    ("pfp", "/pfp", "View any member's full-size profile picture", False),
+    ("makeitquote", "/makeitquote", "Generate a quote card PNG from text", False),
+    ("replyquote", "@TicketMint Reply Quote", "Reply to a message and ping @TicketMint to quote it", False),
+    ("afk", "/afk", "Set an AFK status with an optional reason", False),
+    ("serverinfo", "/serverinfo", "View server details and protection stats", False),
+    ("userinfo", "/userinfo", "View a member's ID, roles, and staff status", False),
+    ("poll", "/poll", "Create a quick poll with choices", False),
 ]
 
 
@@ -102,7 +109,7 @@ def y_api(method, path, body=None, bearer=None, base_url=None):
     hdrs = {
         "Authorization": f"Bearer {bearer or BOT_TOKEN}",
         "Content-Type": "application/json",
-        "User-Agent": "TicketMintWeb/2.2",
+        "User-Agent": "TicketMintWeb/2.3",
     }
     data = json.dumps(body).encode("utf-8") if body is not None else None
     root = (base_url or API_BASE).rstrip("/")
@@ -154,6 +161,50 @@ def is_voice_item(c):
     k = str(c.get("kind", "")).lower()
     t = str(c.get("type", "")).lower()
     return k in ("voice", "stage") or t in ("voice", "stage", "2", "13")
+
+
+def resolve_server_name(sid, fetched=None, base_srv=None, meta=None):
+    if isinstance(fetched, dict):
+        n = pick_name(fetched) or pick_name(fetched.get("server") if isinstance(fetched.get("server"), dict) else {})
+        if n and not re.match(r"^Server\s*\(", n, re.I):
+            return n
+    if isinstance(base_srv, dict):
+        n = pick_name(base_srv)
+        if n and not re.match(r"^Server\s*\(", n, re.I):
+            return n
+    if isinstance(meta, dict):
+        n = pick_name(meta.get("server") if isinstance(meta.get("server"), dict) else meta)
+        if n and not re.match(r"^Server\s*\(", n, re.I):
+            return n
+    try:
+        cached = r_cmd("GET", "ticketmint:servers")
+        if cached:
+            parsed = json.loads(cached)
+            if isinstance(parsed, list):
+                for s in parsed:
+                    if isinstance(s, dict) and str(s.get("id")) == str(sid):
+                        n = pick_name(s)
+                        if n:
+                            return n
+    except Exception:
+        pass
+    try:
+        mraw = r_cmd("GET", f"ticketmint:meta:{sid}")
+        if mraw:
+            pm = json.loads(mraw)
+            if isinstance(pm, dict):
+                n = pick_name(pm.get("server") if isinstance(pm.get("server"), dict) else pm)
+                if n:
+                    return n
+    except Exception:
+        pass
+    srv_res = safe_y("GET", f"/servers/{sid}")
+    if isinstance(srv_res, dict):
+        inner = srv_res.get("server") if isinstance(srv_res.get("server"), dict) else srv_res
+        n = pick_name(inner)
+        if n:
+            return n
+    return f"Server ({sid})"
 
 
 def sync_server_metadata(sid, existing_meta=None):
@@ -213,8 +264,14 @@ def sync_server_metadata(sid, existing_meta=None):
             cat_map[pid_s] = f"Category ({preview})"
 
     cat_chs = [{"id": cid, "name": cname} for cid, cname in cat_map.items()]
-    new_meta = {"roles": roles, "channels": chs, "categories": cat_chs}
-    if roles or chs or cat_chs:
+    srv_name = pick_name(fetched if isinstance(fetched, dict) else {}, pick_name(meta.get("server") if isinstance(meta.get("server"), dict) else {}, ""))
+    new_meta = {
+        "roles": roles,
+        "channels": chs,
+        "categories": cat_chs,
+        "server": {"id": sid, **({"name": srv_name} if srv_name else {})},
+    }
+    if roles or chs or cat_chs or srv_name:
         r_cmd("SET", f"ticketmint:meta:{sid}", json.dumps(new_meta))
     return new_meta, fetched if isinstance(fetched, dict) else {}
 
@@ -247,7 +304,7 @@ def post_raw_message(cid, payload):
     return False, last_err or "Could not deliver message to channel."
 
 
-def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00", image_url="", footer="", kind="message", ping=""):
+def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00", image_url="", footer="", kind="message", ping="", extra=None):
     if not cid:
         return False, "No channel selected."
     try:
@@ -279,7 +336,7 @@ def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00
         embed_obj["footer"] = {"text": footer}
 
     post_raw_message(cid, {"content": ping or combined_text, "embeds": [embed_obj]})
-    queued = queue_outbox({
+    job = {
         "type": kind,
         "channel_id": str(cid),
         "ping": ping,
@@ -288,7 +345,10 @@ def send_msg_smart(cid, content="", title="", description="", color_hex="#ff7a00
         "description": description,
         "image_url": image_url,
         "footer": footer,
-    })
+    }
+    if isinstance(extra, dict):
+        job.update(extra)
+    queued = queue_outbox(job)
     return True, ("" if queued else "Outbox queue unavailable")
 
 
@@ -314,8 +374,13 @@ def get_scfg(sid):
         raw = {"roles": raw} if isinstance(raw, list) else {}
     disabled = raw.get("disabled_cmds", [])
     roles = raw.get("roles", [])
+    allowed_ping_roles = raw.get("allowed_ping_roles", [])
+    protected_ping_roles = raw.get("protected_ping_roles", [])
     return {
         "roles": roles if isinstance(roles, list) else [],
+        "allowed_ping_roles": allowed_ping_roles if isinstance(allowed_ping_roles, list) else [],
+        "protected_ping_roles": protected_ping_roles if isinstance(protected_ping_roles, list) else [],
+        "block_unpingable_roles": bool(raw.get("block_unpingable_roles", True)),
         "autorole": str(raw.get("autorole", "") or ""),
         "verify_role": str(raw.get("verify_role", "") or ""),
         "verify_channel": str(raw.get("verify_channel", "") or ""),
@@ -341,6 +406,7 @@ def get_scfg(sid):
         "blocked_words": str(raw.get("blocked_words", "") or ""),
         "warn_word_msg": str(raw.get("warn_word_msg", "{user}, that word is not allowed here.") or "{user}, that word is not allowed here."),
         "warn_link_msg": str(raw.get("warn_link_msg", "{user}, links are not allowed in this channel.") or "{user}, links are not allowed in this channel."),
+        "warn_role_ping_msg": str(raw.get("warn_role_ping_msg", "{user}, you cannot ping protected roles.") or "{user}, you cannot ping protected roles."),
     }
 
 
@@ -471,6 +537,9 @@ textarea{min-height:96px;resize:vertical}
 .stat-num{font-size:20px;font-weight:900;color:#ff7a00}
 .stat-lbl{font-size:11px;color:#9ca3af;margin-top:2px}
 .active-pill{background:#ff7a0026;color:#ff7a00;border:1px solid #ff7a00;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:800;margin-left:6px}
+.perm-tag{display:inline-block;padding:2px 7px;border-radius:999px;font-size:10px;font-weight:800;margin-left:6px}
+.perm-mod{background:#ef444422;color:#f87171;border:1px solid #ef444466}
+.perm-mem{background:#22c55e22;color:#4ade80;border:1px solid #22c55e66}
 """
 
 INSTANT_JS = """
@@ -609,7 +678,7 @@ class handler(BaseHTTPRequestHandler):
                             "code": code,
                             "redirect_uri": REDIR_URI,
                         }).encode("utf-8"),
-                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/2.2"},
+                        {"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "TicketMintWeb/2.3"},
                     ),
                     (
                         json.dumps({
@@ -619,7 +688,7 @@ class handler(BaseHTTPRequestHandler):
                             "code": code,
                             "redirect_uri": REDIR_URI,
                         }).encode("utf-8"),
-                        {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/2.2"},
+                        {"Content-Type": "application/json", "User-Agent": "TicketMintWeb/2.3"},
                     ),
                 ]
                 for b_data, hdrs in attempts:
@@ -639,7 +708,7 @@ class handler(BaseHTTPRequestHandler):
                         try:
                             me_req = urllib.request.Request(
                                 f"https://{Y_HOST}{ep}",
-                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/2.2"},
+                                headers={"Authorization": f"Bearer {access}", "User-Agent": "TicketMintWeb/2.3"},
                             )
                             cand = json.loads(urllib.request.urlopen(me_req, timeout=5).read().decode("utf-8"))
                             if isinstance(cand, dict):
@@ -693,7 +762,7 @@ class handler(BaseHTTPRequestHandler):
             if not sel_id:
                 rows = []
                 for s in admin_srvs:
-                    sname = s.get("name", "Server")
+                    sname = pick_name(s, "Server")
                     ico = f"<img src='{esc(s['icon'])}' loading='lazy' alt=''>" if s.get("icon") else esc(sname[:1].upper())
                     mc = f"{s['member_count']} members" if s.get("member_count") else "Ready to configure"
                     rows.append(
@@ -737,8 +806,8 @@ class handler(BaseHTTPRequestHandler):
                 if isinstance(fetched, dict) and fetched.get("id") and not is_admin(sel_id, sess["id"]):
                     return self.redir("/dashboard")
 
-            base_srv = srv_obj if isinstance(srv_obj, dict) else (fetched if isinstance(fetched, dict) and fetched.get("id") else {"id": sel_id, "name": f"Server ({sel_id})"})
-            srv_name = (fetched.get("name") if isinstance(fetched, dict) else None) or base_srv.get("name") or f"Server ({sel_id})"
+            base_srv = srv_obj if isinstance(srv_obj, dict) else (fetched if isinstance(fetched, dict) and fetched.get("id") else {"id": sel_id})
+            srv_name = resolve_server_name(sel_id, fetched=fetched, base_srv=base_srv, meta=meta)
             m_count = (fetched.get("member_count") if isinstance(fetched, dict) else None) or base_srv.get("member_count") or 5
             sc = get_scfg(sel_id)
             tab = qs.get("tab", ["tickets"])[0].strip().lower()
@@ -786,16 +855,32 @@ class handler(BaseHTTPRequestHandler):
 
             non_everyone_roles = [r for r in roles if isinstance(r, dict) and r.get("name") != "@everyone"]
             pills = "".join(
-                f"<label class='pill'><input type='checkbox' name='roles' value='{esc(r['id'])}' {'checked' if r['id'] in sc['roles'] else ''}><span>{esc(r.get('name', 'Role'))}</span></label>"
+                f"<label class='pill'><input type='checkbox' name='roles' value='{esc(r['id'])}' {'checked' if str(r['id']) in set(str(x) for x in sc['roles']) else ''}><span>{esc(r.get('name', 'Role'))}</span></label>"
                 for r in non_everyone_roles
             ) or "<span style='color:#9ca3af;font-size:12px'>Click Sync Channels &amp; Roles if roles don't appear yet.</span>"
+
+            allowed_ping_pills = "".join(
+                f"<label class='pill'><input type='checkbox' name='allowed_ping_roles' value='{esc(r['id'])}' {'checked' if str(r['id']) in set(str(x) for x in sc['allowed_ping_roles']) else ''}><span>@{esc(r.get('name', 'Role'))}</span></label>"
+                for r in non_everyone_roles
+            ) or "<span style='color:#9ca3af;font-size:12px'>No roles synced yet.</span>"
+
+            protected_ping_pills = "".join(
+                f"<label class='pill'><input type='checkbox' name='protected_ping_roles' value='{esc(r['id'])}' {'checked' if str(r['id']) in set(str(x) for x in sc['protected_ping_roles']) else ''}><span>@{esc(r.get('name', 'Role'))}</span></label>"
+                for r in non_everyone_roles
+            ) or "<span style='color:#9ca3af;font-size:12px'>No roles synced yet.</span>"
+
             cho = ch_opts(txt_chs, sc["dash"], "-- Select Ticket Panel Channel --", "#")
             cao = ch_opts(cat_chs, sc["cat"], "None (Optional)", "")
             lgo = ch_opts(txt_chs, sc["logs"], "None (Optional)", "#")
             tickets_pane = (
                 f"<div class='tab-pane {'act' if tab=='tickets' else ''}' data-pane='tickets'>{stats_bar}"
                 f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
-                f"<div class='field'><label>Admin / Mod Roles ({len(sc['roles'])} selected)</label><small>Members with these roles can view, claim, and close private tickets.</small><div class='pills'>{pills}</div></div>"
+                f"<div class='field'><label>Admin / Mod Roles ({len(sc['roles'])} selected)</label><small>Members with these roles can use mod-only commands and view/claim/close tickets.</small><div class='pills'>{pills}</div></div>"
+                f"<div class='field'><label>Roles Members CAN Ping</label><small>Roles that regular members are allowed to ping (for example @omorfos78 or pingable roles).</small><div class='pills'>{allowed_ping_pills}</div></div>"
+                f"<div class='field'><label>Protected Roles Members CANNOT Ping</label><small>If a non-staff member pings any selected role, TicketMint blocks/warns on it.</small>"
+                f"<div class='pills'>{protected_ping_pills}</div>"
+                f"<div style='margin-top:10px'><label class='chk-line'><input type='checkbox' name='block_unpingable_roles' value='1' {'checked' if sc['block_unpingable_roles'] else ''}><span>Enforce protected role ping blocking for regular members</span></label></div>"
+                f"<div style='margin-top:10px'><label>Protected Role Warning Message</label><small>Sent when a member pings a protected role. Use <b>{{user}}</b>.</small><input type='text' name='warn_role_ping_msg' value='{esc(sc['warn_role_ping_msg'])}' placeholder='{{user}}, you cannot ping protected roles.'></div></div>"
                 f"<div class='field'><label>Ticket Panel Channel</label><small>Channel where the Open a Ticket dashboard gets posted.</small><select name='dash'>{cho}</select></div>"
                 f"<div class='field'><label>Ticket Category (Optional)</label><small>Category where new private ticket rooms are placed.</small><select name='cat'>{cao}</select></div>"
                 f"<div class='field'><label>Ticket Logs &amp; Transcripts Channel (Optional)</label><small>Receives open/close logs and ticket transcripts.</small><select name='logs'>{lgo}</select></div>"
@@ -905,15 +990,16 @@ class handler(BaseHTTPRequestHandler):
 
             disabled = set(sc["disabled_cmds"])
             cmd_items = "".join(
-                f"<div class='cmd-row'><div><div style='font-weight:700;font-size:13px'>{esc(label)}</div>"
+                f"<div class='cmd-row'><div><div style='font-weight:700;font-size:13px'>{esc(label)}"
+                f"<span class='perm-tag {'perm-mod' if mod_only else 'perm-mem'}'>{'MODS ONLY' if mod_only else 'MEMBERS'}</span></div>"
                 f"<div style='color:#9ca3af;font-size:12px;margin-top:2px'>{esc(desc)}</div></div>"
                 f"<label class='pill'><input type='checkbox' name='enabled_cmds' value='{esc(key)}' {'checked' if key not in disabled else ''}><span>Enabled</span></label></div>"
-                for key, label, desc in ALL_COMMANDS
+                for key, label, desc, mod_only in ALL_COMMANDS
             )
             commands_pane = (
                 f"<div class='tab-pane {'act' if tab=='commands' else ''}' data-pane='commands'>"
                 f"<form method='POST' action='/save'><input type='hidden' name='server' value='{esc(sel_id)}'><input type='hidden' name='tab' value='{esc(tab)}'>"
-                f"<div class='field'><label>Commands &amp; Tools</label><small>All commands are enabled by default in <b>{esc(srv_name)}</b>. Toggle any off if needed.</small>{cmd_items}</div>"
+                f"<div class='field'><label>Commands &amp; Tools</label><small>Mod-only commands are restricted to staff/admins in <b>{esc(srv_name)}</b>; member commands are open to everyone.</small>{cmd_items}</div>"
                 f"<div style='display:flex;gap:8px;flex-wrap:wrap;padding-top:14px'><button type='submit' name='act' value='save' class='btn btn-orange'>Save Command Settings</button></div></form></div>"
             )
 
@@ -948,10 +1034,10 @@ class handler(BaseHTTPRequestHandler):
         cta = "Go to Dashboard" if sess else "Authorize & Open Dashboard"
         home = (
             f"<div class='hero'><h1>Yapin's fastest <span>ticket, mod &amp; community</span> bot.</h1>"
-            f"<p>Private support tickets with transcripts, smart anti-bypass auto-mod, welcome cards, and an instant zero-wait dashboard.</p>"
+            f"<p>Private support tickets with transcripts, smart anti-bypass auto-mod, role ping rules, welcome cards, and an instant zero-wait dashboard.</p>"
             f"<div class='hero-btns'><a href='/dashboard' class='btn btn-orange'>{cta}</a><a href='{INVITE_URL}' class='btn btn-dark'>+ Invite Bot to Server</a></div></div>"
             f"<div class='grid'><div class='card'><h3 style='color:#ff7a00;margin-bottom:6px;font-size:16px'>Tickets &amp; Transcripts</h3><p style='color:#9ca3af;font-size:13px'>Auto-locked private rooms with claim/close buttons and automatic transcript logs.</p></div>"
-            f"<div class='card'><h3 style='color:#ff7a00;margin-bottom:6px;font-size:16px'>Anti-Bypass Auto-Mod</h3><p style='color:#9ca3af;font-size:13px'>Blocks stretched words, leetspeak, links, caps, and spam with quick warnings.</p></div>"
+            f"<div class='card'><h3 style='color:#ff7a00;margin-bottom:6px;font-size:16px'>Anti-Bypass Auto-Mod</h3><p style='color:#9ca3af;font-size:13px'>Blocks stretched words, leetspeak, protected role pings, links, caps, and spam.</p></div>"
             f"<div class='card'><h3 style='color:#ff7a00;margin-bottom:6px;font-size:16px'>Instant Web Control</h3><p style='color:#9ca3af;font-size:13px'>Instant tab switching, welcome cards, verification, announcements, and 1-click presets.</p></div></div>"
         )
         return self.send_html(page("TicketMint - Yapin' Bot", home, sess))
@@ -996,6 +1082,10 @@ class handler(BaseHTTPRequestHandler):
             cur = get_scfg(sid)
             if tab == "tickets":
                 cur["roles"] = data.get("roles", [])
+                cur["allowed_ping_roles"] = data.get("allowed_ping_roles", [])
+                cur["protected_ping_roles"] = data.get("protected_ping_roles", [])
+                cur["block_unpingable_roles"] = bool(data.get("block_unpingable_roles"))
+                cur["warn_role_ping_msg"] = data.get("warn_role_ping_msg", ["{user}, you cannot ping protected roles."])[0].strip() or "{user}, you cannot ping protected roles."
                 cur["dash"] = data.get("dash", [""])[0].strip()
                 cur["cat"] = data.get("cat", [""])[0].strip()
                 cur["logs"] = data.get("logs", [""])[0].strip()
@@ -1030,7 +1120,7 @@ class handler(BaseHTTPRequestHandler):
                     if not target_ch:
                         return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=welcome&err={urllib.parse.quote('Select a Welcome Channel first.')}")
                     fetched = u_dict(safe_y("GET", f"/servers/{sid}"), "server")
-                    sname = (fetched.get("name") if isinstance(fetched, dict) else None) or f"Server ({sid})"
+                    sname = resolve_server_name(sid, fetched=fetched)
                     m_cnt = (fetched.get("member_count") if isinstance(fetched, dict) else None) or len(u_list(safe_y("GET", f"/servers/{sid}/members"), "members")) or 5
                     ping_str = f"<@{sess['id']}>"
                     txt = (
@@ -1049,6 +1139,7 @@ class handler(BaseHTTPRequestHandler):
                         image_url=cur["w_banner"],
                         footer=f"Member #{m_cnt} • Test Welcome Card",
                         kind="welcome_test",
+                        extra={"server_name": sname, "member_count": m_cnt},
                     )
                     if not ok:
                         return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=welcome&err={urllib.parse.quote(err)}")
@@ -1103,7 +1194,7 @@ class handler(BaseHTTPRequestHandler):
                     if not cur["verify_channel"]:
                         return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=verification&err={urllib.parse.quote('Select a Verification Channel first.')}")
                     fetched = u_dict(safe_y("GET", f"/servers/{sid}"), "server")
-                    sname = (fetched.get("name") if isinstance(fetched, dict) else None) or f"Server ({sid})"
+                    sname = resolve_server_name(sid, fetched=fetched)
                     ok, err = post_verify_panel(cur["verify_channel"], sname)
                     if not ok:
                         return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=verification&err={urllib.parse.quote(err)}")
@@ -1121,7 +1212,7 @@ class handler(BaseHTTPRequestHandler):
                 return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=presets&saved=1")
             if tab == "commands":
                 enabled = set(data.get("enabled_cmds", []))
-                cur["disabled_cmds"] = [k for k, _, _ in ALL_COMMANDS if k not in enabled]
+                cur["disabled_cmds"] = [k for k, _, _, _ in ALL_COMMANDS if k not in enabled]
                 all_cfg[sid] = cur
                 save_all_cfg(all_cfg, sid)
                 return self.redir(f"/dashboard?server={urllib.parse.quote(sid)}&tab=commands&saved=1")
